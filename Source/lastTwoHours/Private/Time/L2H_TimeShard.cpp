@@ -7,6 +7,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "Interaction/L2H_WorldStateId.h"
 #include "Net/UnrealNetwork.h"
 #include "Time/L2H_LevelTimeConfig.h"
 #include "Time/L2H_TimeDirector.h"
@@ -49,6 +50,55 @@ void AL2H_TimeShard::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 
 	DOREPLIFETIME(AL2H_TimeShard, TimeValue);
 	DOREPLIFETIME(AL2H_TimeShard, RemainingLifetime);
+	DOREPLIFETIME(AL2H_TimeShard, bTaken);
+	DOREPLIFETIME(AL2H_TimeShard, bPlaced);
+}
+
+void AL2H_TimeShard::BeginPlay()
+{
+	Super::BeginPlay();
+
+	if (HasAuthority())
+	{
+		// Loaded with the level, not spilled at runtime: a hidden clock.
+		bPlaced = IsNetStartupActor();
+	}
+	HomeLocation = GetActorLocation();
+}
+
+void AL2H_TimeShard::SetTaken(bool bNewTaken)
+{
+	bTaken = bNewTaken;
+	bConsumed = bNewTaken;
+	SetActorHiddenInGame(bNewTaken);
+	if (!bNewTaken)
+	{
+		SetActorLocation(HomeLocation);
+	}
+}
+
+void AL2H_TimeShard::L2H_GetInteractPrompt_Implementation(bool& bCanInteract, FText& OutVerb, FText& OutTargetName)
+{
+	// Taken by walking into it, never by the Interact button.
+	bCanInteract = false;
+}
+
+void AL2H_TimeShard::L2H_GetWorldStateId_Implementation(FGuid& OutId)
+{
+	OutId = bPlaced ? L2H_MakeWorldStateId(this) : FGuid();
+}
+
+void AL2H_TimeShard::L2H_CaptureWorldState_Implementation(TMap<FName, bool>& OutFlags)
+{
+	OutFlags.Add(TEXT("Taken"), bTaken);
+}
+
+void AL2H_TimeShard::L2H_ApplyWorldState_Implementation(const TMap<FName, bool>& InFlags)
+{
+	if (const bool* Taken = InFlags.Find(TEXT("Taken")))
+	{
+		SetTaken(*Taken);
+	}
 }
 
 void AL2H_TimeShard::InitialiseFromConfig(float InTimeValue, float InLifetime)
@@ -68,7 +118,7 @@ void AL2H_TimeShard::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	if (!HasAuthority())
+	if (!HasAuthority() || bTaken)
 	{
 		return;
 	}
@@ -204,6 +254,13 @@ bool AL2H_TimeShard::TryAbsorb(AL2H_BaseCharacter* Character)
 	L2HTime::LogImportant(FString::Printf(
 		TEXT("Shard: %s absorbed %.1fs"), *GetNameSafe(Character), TimeValue));
 
-	Destroy();
+	if (bPlaced)
+	{
+		SetTaken(true);
+	}
+	else
+	{
+		Destroy();
+	}
 	return true;
 }

@@ -7,6 +7,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
 #include "Save/L2H_SaveSubsystem.h"
 #include "Time/L2H_TimeDirector.h"
 #include "World/L2H_StationMarker.h"
@@ -45,6 +46,15 @@ void AL2H_CheckpointTerminal::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
 
+	RefreshMarker();
+}
+
+void AL2H_CheckpointTerminal::RefreshMarker()
+{
+	if (!Marker)
+	{
+		return;
+	}
 	const bool bHub = SavesOnArrival();
 	Marker->Color = bHub ? FLinearColor(0.1f, 0.95f, 0.3f) : FLinearColor(0.15f, 0.45f, 1.0f);
 	Marker->Label = bHub
@@ -52,6 +62,19 @@ void AL2H_CheckpointTerminal::OnConstruction(const FTransform& Transform)
 		: NSLOCTEXT("L2HStation", "Spot", "SAVE SPOT: paid save (time menu)");
 	Marker->PadRadius = 160.0f;
 	Marker->Refresh();
+}
+
+void AL2H_CheckpointTerminal::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AL2H_CheckpointTerminal, Tier);
+	DOREPLIFETIME(AL2H_CheckpointTerminal, CheckpointId);
+	DOREPLIFETIME(AL2H_CheckpointTerminal, DisplayName);
+}
+
+void AL2H_CheckpointTerminal::OnRep_Identity()
+{
+	RefreshMarker();
 }
 
 void AL2H_CheckpointTerminal::BeginPlay()

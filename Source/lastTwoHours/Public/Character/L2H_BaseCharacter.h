@@ -166,6 +166,34 @@ public:
 	void OpenHubBank(float Allowance);
 	void CloseHubBank();
 
+	/** Hits the time shield still takes before Health does. Replicated for the clock. */
+	UFUNCTION(BlueprintPure, Category = "L2H|Tools")
+	int32 GetShieldHits() const { return ShieldHits; }
+
+	/** Server only. */
+	void SetShieldHits(int32 Hits) { ShieldHits = FMath::Max(Hits, 0); }
+
+	/** Where this player stood, and with how much Health, a moment ago. Recorded on the server for the rewind watch. */
+	struct FRewindSample
+	{
+		float Time = 0.0f;
+		FVector Location = FVector::ZeroVector;
+		FRotator Rotation = FRotator::ZeroRotator;
+		float Health = 0.0f;
+	};
+
+	/**
+	 * Server only. The sample Seconds before now -- or before the fall, for a player on the floor -- taken
+	 * standing on the ground, so the watch never puts anyone back in mid-air. False when there is none.
+	 */
+	bool FindRewindSample(float Seconds, FRewindSample& OutSample) const;
+
+	void ClearRewindHistory() { RewindHistory.Reset(); }
+
+	/** The hub whose stage this player last finished (None before the first). The clock points at the nearest other hub. */
+	FName GetLastHubId() const { return LastHubId; }
+	void SetLastHubId(FName Id) { LastHubId = Id; }
+
 	/** Server world time of this player's last transfer given (GameState clock), for the free window. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "L2H|Transfer")
 	float LastTransferGiveTime = -1000.0f;
@@ -876,6 +904,40 @@ protected:
 	void Input_Menu(const FInputActionValue& Value);
 
 	// ---------------------------------------------------------------------------------------
+	// On the floor. After SpectateDelay the view moves to the partner and orbits them with this
+	// player's own stick; Interact (Triangle / E) swaps back to the body and again. D-pad Up (T) pings
+	// where the view looks, away from a terminal, standing or down; the pole shows on both screens.
+	// ---------------------------------------------------------------------------------------
+
+	/** Owning machine only, from Tick: moves the camera rig to the partner and back. */
+	void UpdateDownView();
+
+	/** The nearest other player, the one the downed view follows. */
+	AL2H_BaseCharacter* FindPartner() const;
+
+	/** Owning machine: traces the view and asks the server for a ping. */
+	void TryPing();
+
+	UFUNCTION(Server, Reliable)
+	void ServerPing(FVector_NetQuantize Location, AActor* HitActor);
+
+	/** Set by Interact while down: look at the body instead of the partner. */
+	bool bDownViewOwnBody = false;
+
+	/** Local time this player was first seen on the floor; -1 while standing. */
+	float DownViewSince = -1.0f;
+
+	/** The camera rig (GASP's GameplayCamera, else the boom) while it is lent to the partner. */
+	TWeakObjectPtr<USceneComponent> DownViewRig;
+	FVector DownViewRigRelative = FVector::ZeroVector;
+
+	float LastPingTime = -1000.0f;
+
+	/** Server side: one ping per player, the previous goes when a new one is placed. */
+	TWeakObjectPtr<AActor> ActivePing;
+	float ServerLastPingTime = -1000.0f;
+
+	// ---------------------------------------------------------------------------------------
 	// Time quick menu (D-pad Left / X): give time, ask for time, answer the partner's request.
 	// While it is open IMC_L2H_TimeMenu sits on top: D-pad Up/Down move, X or Triangle confirm,
 	// Circle or D-pad Left close. Those keys are consumed, so X does not also jump.
@@ -969,6 +1031,17 @@ protected:
 
 	UPROPERTY(Replicated)
 	float HubCarried = 0.0f;
+
+	UPROPERTY(Replicated)
+	FName LastHubId;
+
+	UPROPERTY(Replicated)
+	int32 ShieldHits = 0;
+
+	/** Server only, oldest first, about RewindHistorySeconds long. */
+	TArray<FRewindSample> RewindHistory;
+	float NextRewindSampleTime = 0.0f;
+	void RecordRewindSample();
 
 	// The free revive hold, local to the player holding Interact.
 	TWeakObjectPtr<AL2H_BaseCharacter> ReviveHoldTarget;

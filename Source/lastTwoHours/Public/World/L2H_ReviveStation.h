@@ -49,6 +49,14 @@ public:
 	/** Server only. All charges back; the director calls it when a stage ends. */
 	void Refill();
 
+	/**
+	 * Server only, right after a runtime spawn: turns this into a beacon (the shop tool). One charge, gone
+	 * once used, at the end of the stage (Refill) or on a rewind; never part of the saved world.
+	 */
+	void MakePortable(float InReviveSeconds);
+
+	bool IsPortable() const { return bPortable; }
+
 	/** Fired on every machine when a charge is used or refilled, for the glow and the counter. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "L2H|Revive")
 	void OnChargesChanged(int32 ChargesLeft);
@@ -73,6 +81,12 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_ChargesUsed)
 	int32 ChargesUsed = 0;
+
+	UPROPERTY(ReplicatedUsing = OnRep_Portable)
+	bool bPortable = false;
+
+	UFUNCTION()
+	void OnRep_Portable();
 
 	UFUNCTION()
 	void OnRep_ChargesUsed();

@@ -28,6 +28,7 @@
 #include "Time/L2H_TimeAttributeSet.h"
 #include "Time/L2H_TimeShard.h"
 #include "Time/L2HTimeLog.h"
+#include "Weapon/L2H_WeaponComponent.h"
 #include "TimerManager.h"
 
 namespace
@@ -659,6 +660,84 @@ bool AL2H_TimeDirector::ApplyItemEffect(AL2H_BaseCharacter* User, const FL2H_Ite
 }
 
 void AL2H_TimeDirector::EndTimeStop()
+
+	case EL2H_ItemUseEffect::TimeShield:
+	{
+		if (User->GetShieldHits() > 0 || User->IsDead() || User->IsDowned())
+		{
+			L2HTime::LogImportant(FString::Printf(TEXT("Shield: %s refused -- %s -- kept"), *GetNameSafe(User),
+				User->GetShieldHits() > 0 ? TEXT("a shield is already up") : TEXT("on the floor")));
+			return false;
+		}
+		User->SetShieldHits(FMath::Max(FMath::RoundToInt(Data.EffectMagnitude), 1));
+		L2HTime::LogImportant(FString::Printf(TEXT("Shield: %s takes the next %d hits"), *GetNameSafe(User), User->GetShieldHits()));
+		return true;
+	}
+
+	case EL2H_ItemUseEffect::RewindWatch:
+	{
+		// Back to a moment ago: the place and the Health. Not the clock -- the watch was paid for with the
+		// bank, and giving seconds back would make it a second elixir. So it cannot raise a player whose
+		// clock ran out, only one who fell to damage (a missed jump, a bad fight).
+		AL2H_BaseCharacter::FRewindSample Sample;
+		const bool bOutOfTime = User->IsDowned() && !User->IsDead();
+		if (bOutOfTime || User->IsBeingCarried() || !User->FindRewindSample(Data.EffectMagnitude, Sample))
+		{
+			L2HTime::LogImportant(FString::Printf(TEXT("Rewind: %s refused -- %s -- kept"), *GetNameSafe(User),
+				bOutOfTime ? TEXT("the clock ran out") : TEXT("no safe moment to go back to")));
+			return false;
+		}
+		User->EndCarry();
+		const float Health = FMath::Max(Sample.Health, 1.0f);
+		if (User->IsDead())
+		{
+			RevivePawn(User, Health, FMath::Max(GetTimeFor(User), 0.0f));
+		}
+		else
+		{
+			SetHealthTo(User, Health);
+		}
+		User->TeleportTo(Sample.Location, Sample.Rotation, false, true);
+		User->ClearRewindHistory();
+		L2HTime::LogImportant(FString::Printf(TEXT("Rewind: %s went back %.0fs to %s with %.0f hp"), *GetNameSafe(User),
+			Data.EffectMagnitude, *Sample.Location.ToCompactString(), Health));
+		return true;
+	}
+
+	case EL2H_ItemUseEffect::Beacon:
+	{
+		if (User->IsDead() || User->IsDowned() || !GetWorld())
+		{
+			return false;
+		}
+		// A revive station of one charge, put down where the user stands. Gone once used, at the end of the
+		// stage, or on a rewind; it is the carry's answer to the elixir: cheap, but someone has to walk.
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.Owner = User;
+		SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		const FVector Where = User->GetActorLocation() + FVector(0.0f, 0.0f, 30.0f);
+		AL2H_ReviveStation* Beacon = GetWorld()->SpawnActor<AL2H_ReviveStation>(AL2H_ReviveStation::StaticClass(), Where, FRotator::ZeroRotator, SpawnParams);
+		if (!Beacon)
+		{
+			return false;
+		}
+		Beacon->MakePortable(Data.EffectMagnitude);
+		L2HTime::LogImportant(FString::Printf(TEXT("Beacon: %s placed one at %s (+%.0fs)"), *GetNameSafe(User),
+			*Where.ToCompactString(), Data.EffectMagnitude));
+		return true;
+	}
+
+	case EL2H_ItemUseEffect::PrepaidMagazine:
+	{
+		UL2H_WeaponComponent* Weapons = User->FindComponentByClass<UL2H_WeaponComponent>();
+		if (!Weapons || !Weapons->RefillClipFree())
+		{
+			L2HTime::LogImportant(FString::Printf(TEXT("Magazine: %s has nothing to refill -- kept"), *GetNameSafe(User)));
+			return false;
+		}
+		Weapons->PlayReloadAnimation();
+		return true;
+	}
 {
 	if (!bTimeStopped)
 	{
@@ -845,6 +924,7 @@ void AL2H_TimeDirector::CompleteSegment(AL2H_CheckpointTerminal* Hub)
 			*GetNameSafe(Pawn), Leftover, Pawn->GetChrons(), NextTime));
 	}
 
+		Pawn->SetLastHubId(Hub->GetCheckpointId());
 	// A new stage, new revive charges.
 	for (TActorIterator<AL2H_ReviveStation> It(GetWorld()); It; ++It)
 	{
@@ -1152,13 +1232,14 @@ TArray<AL2H_BaseCharacter*> AL2H_TimeDirector::GetRegisteredPawns() const
 	return Pawns;
 }
 
-void AL2H_TimeDirector::SpillShardAt(AActor* Target)
+void AL2H_TimeDirector::SpillShardAt(AActor* Target, float TimeValue)
 {
 	UWorld* World = GetWorld();
 	if (!HasAuthority() || !Target || !World || !Config || !Config->ShardClass)
 	{
 		return;
 	}
+	const float Value = TimeValue > 0.0f ? TimeValue : (Config ? Config->ShardTimeValue : 0.0f);
 
 	// Scattered off the victim's centre rather than dropped on it: a shard that spawns inside the
 	// player is absorbed on the very next tick, and then the lost seconds were never really in the
@@ -1183,14 +1264,17 @@ void AL2H_TimeDirector::SpillShardAt(AActor* Target)
 
 	// Configured after the spawn rather than in the constructor, because a shard is also placeable in
 	// a level by hand and a designer-placed one has to keep the values authored on it.
-	Shard->InitialiseFromConfig(Config->ShardTimeValue, Config->ShardLifetime);
+	Shard->InitialiseFromConfig(Value, Config->ShardLifetime);
 
 	// The victim is inside the magnet's range by construction, so without a short window the seconds
 	// were back in their pocket on the next tick and the hit cost a third of what it said.
-	Shard->IgnoreCollectorFor(Target, 1.5f);
+	if (Target->IsA<AL2H_BaseCharacter>())
+	{
+		Shard->IgnoreCollectorFor(Target, 1.5f);
+	}
 
 	L2HTime::LogImportant(FString::Printf(TEXT("TimeDirector: %s spilled a %.1fs shard"),
-		*GetNameSafe(Target), Config->ShardTimeValue));
+		*GetNameSafe(Target), Value));
 }
 
 void AL2H_TimeDirector::ApplyTimeEffect(AActor* Target, float Magnitude, TSubclassOf<UGameplayEffect> EffectClass, const FName& MagnitudeName)
@@ -1546,6 +1630,15 @@ void AL2H_TimeDirector::ApplyHealthDamage(AActor* Target, float Amount)
 	// Measured rather than assumed. The attribute set clamps the loss against the current value, so a
 	// 40-point hit on a player with 12 left costs 12 Health and -- crucially -- only 12 Health worth of
 	// seconds. Charging the full 40 would make the killing blow cost more than the life it took.
+	// A time shield takes the whole hit, so the hit costs neither Health nor seconds.
+	if (AL2H_BaseCharacter* Shielded = Cast<AL2H_BaseCharacter>(Target); Shielded && Amount > 0.0f && Shielded->GetShieldHits() > 0)
+	{
+		Shielded->SetShieldHits(Shielded->GetShieldHits() - 1);
+		L2HTime::LogImportant(FString::Printf(TEXT("Shield: %s blocked %.1f damage, %d hit(s) left"),
+			*GetNameSafe(Target), Amount, Shielded->GetShieldHits()));
+		return;
+	}
+
 	const float HealthAfter = GetHealthFor(Target);
 	const float DamageTaken = FMath::Max(HealthBefore - HealthAfter, 0.0f);
 

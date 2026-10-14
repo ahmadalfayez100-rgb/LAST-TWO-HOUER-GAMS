@@ -12,6 +12,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "Time/L2HTimeLog.h"
+#include "Time/L2H_LevelTimeConfig.h"
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -192,6 +193,17 @@ void AL2H_EnemyRobot::Die()
 
 	bDead = true;
 	ApplyDeathPhysics();
+
+	// Part of what the fight cost comes back: the shards wait by the wreck for whoever walks over.
+	AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this);
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(this);
+	if (Director && Config)
+	{
+		for (int32 Index = 0; Index < Config->EnemyShardCount; ++Index)
+		{
+			Director->SpillShardAt(this, Config->EnemyShardValue);
+		}
+	}
 
 	if (CorpseLifetime > 0.0f)
 	{

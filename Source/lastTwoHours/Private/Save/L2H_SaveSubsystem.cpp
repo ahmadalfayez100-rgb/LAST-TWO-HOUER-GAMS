@@ -12,6 +12,7 @@
 #include "Time/L2H_TimeDirector.h"
 #include "Time/L2HTimeLog.h"
 #include "World/L2H_CheckpointTerminal.h"
+#include "World/L2H_ReviveStation.h"
 
 namespace
 {
@@ -169,6 +170,7 @@ bool UL2H_SaveSubsystem::CapturePlayers(FL2H_CheckpointRecord& Record)
 		Saved.Time = AL2H_TimeDirector::GetTimeFor(Pawn);
 		Saved.bDowned = Pawn->IsDowned();
 		Saved.Chrons = Pawn->GetChrons();
+		Saved.LastHubId = Pawn->GetLastHubId();
 		Saved.Health = AL2H_TimeDirector::GetHealthFor(Pawn);
 		if (const UL2H_InventoryComponent* Bag = Pawn->FindComponentByClass<UL2H_InventoryComponent>())
 		{
@@ -616,6 +618,18 @@ bool UL2H_SaveSubsystem::ApplyRecord(const UObject* WorldContextObject, const FL
 		if (Pawn)
 		{
 			Pawn->EndCarry();
+			// Tools bought after this checkpoint are undone with the bag that held them.
+			Pawn->SetShieldHits(0);
+			Pawn->ClearRewindHistory();
+		}
+	}
+
+	// Beacons placed after it too.
+	for (TActorIterator<AL2H_ReviveStation> It(World); It; ++It)
+	{
+		if (It->IsPortable())
+		{
+			It->Destroy();
 		}
 	}
 
@@ -652,6 +666,7 @@ bool UL2H_SaveSubsystem::ApplyRecord(const UObject* WorldContextObject, const FL
 		// This is also what lifts a downed pawn back up, because the restore crosses zero.
 		Director->ApplyTimeTo(Pawn, Saved.Time);
 		Pawn->SetChrons(Saved.Chrons);
+		Pawn->SetLastHubId(Saved.LastHubId);
 		Pawn->CloseHubBank();
 
 		if (Saved.bDowned != Pawn->IsDowned())

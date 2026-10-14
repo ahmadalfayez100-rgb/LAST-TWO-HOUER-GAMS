@@ -141,6 +141,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "L2H|Inventory")
 	void RequestUse(int32 Index);
 
+	/** Server only: uses the cell as if its owner had asked (a reload spending a prepaid magazine). */
+	void UseOnServer(int32 Index);
+
 	UFUNCTION(BlueprintCallable, Category = "L2H|Inventory")
 	void RequestCombine(int32 IndexA, int32 IndexB);
 

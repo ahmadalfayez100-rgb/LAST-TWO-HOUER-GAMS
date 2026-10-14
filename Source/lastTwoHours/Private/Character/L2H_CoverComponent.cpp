@@ -281,6 +281,11 @@ void UL2H_CoverComponent::FinishTransfer()
 	bHighCover = bTransferHigh;
 	// The crossing clips arrive leaning back the way they came.
 	bFaceRight = !bTransitionRight;
+	SideLockUntil = GetWorld() ? GetWorld()->GetTimeSeconds() + 0.5f : 0.0f;
+	if (UCharacterMovementComponent* Move = Character->GetCharacterMovement())
+	{
+		Move->Velocity = FVector::ZeroVector;
+	}
 	Phase = EL2H_CoverPhase::Holding;
 	Character->SetActorRotation(FRotator(0.0f, FVector(CoverNormal).Rotation().Yaw, 0.0f));
 	StartPhaseVisuals();
@@ -545,6 +550,7 @@ void UL2H_CoverComponent::FinishEnter()
 		return;
 	}
 	Phase = EL2H_CoverPhase::Holding;
+	SideLockUntil = GetWorld() ? GetWorld()->GetTimeSeconds() + 0.5f : 0.0f;
 	// The turn curve has brought the capsule round to the wall's outward facing and the clip has ended on
 	// the idle's first pose: settle the last fraction of a degree and start the idle unblended.
 	Character->SetActorRotation(FRotator(0.0f, FVector(CoverNormal).Rotation().Yaw, 0.0f));
@@ -598,8 +604,9 @@ void UL2H_CoverComponent::ServerExitCover_Implementation()
 	ExitCover();
 }
 
-void UL2H_CoverComponent::ServerBeginExit_Implementation()
+void UL2H_CoverComponent::ServerBeginExit_Implementation(bool bRight)
 {
+	bFaceRight = bRight;
 	BeginExit();
 }
 
@@ -611,12 +618,19 @@ void UL2H_CoverComponent::OnRep_InCover()
 	}
 }
 
-void UL2H_CoverComponent::OnRep_Phase()
+void UL2H_CoverComponent::OnRep_Phase(EL2H_CoverPhase OldPhase)
 {
 	// The owner already started its own transition; the others start theirs from the replicated phase.
 	const AL2H_BaseCharacter* Character = GetCharacter();
 	if (Character && !Character->IsLocallyControlled())
 	{
+		if (Phase == EL2H_CoverPhase::Holding && (OldPhase == EL2H_CoverPhase::Transferring || OldPhase == EL2H_CoverPhase::Entering))
+		{
+			// The hold arrived without FinishTransfer / FinishEnter running here: take their side, or the
+			// other machines showed the far side's idle until the next move.
+			bFaceRight = OldPhase == EL2H_CoverPhase::Transferring ? !bTransitionRight : bTransitionRight;
+			SideLockUntil = GetWorld() ? GetWorld()->GetTimeSeconds() + 0.5f : 0.0f;
+		}
 		StartPhaseVisuals();
 	}
 }
@@ -649,10 +663,11 @@ void UL2H_CoverComponent::TickComponent(float DeltaTime, ELevelTick TickType, FA
 			// Out through the exit clip from a settled hold; a press mid-transition is ignored.
 			if (Phase == EL2H_CoverPhase::Holding && !bAiming)
 			{
+				const bool bSide = bFaceRight;
 				BeginExit();
 				if (!Character->HasAuthority())
 				{
-					ServerBeginExit();
+					ServerBeginExit(bSide);
 				}
 			}
 			else if (Phase == EL2H_CoverPhase::Holding)
@@ -928,7 +943,12 @@ void UL2H_CoverComponent::UpdateAnimation(bool bAiming)
 	const FVector Right = FVector::CrossProduct(FVector::UpVector, FVector(CoverNormal));
 	const float Along = FVector::DotProduct(Character->GetVelocity(), Right);
 	const bool bMoving = FMath::Abs(Along) > 20.0f;
-	if (bMoving)
+	const bool bSideLocked = GetWorld() && GetWorld()->GetTimeSeconds() < SideLockUntil;
+	if (bSideLocked)
+	{
+		// The side the last clip ended on holds for a moment (see SideLockUntil).
+	}
+	else if (bMoving)
 	{
 		bFaceRight = Along > 0.0f;
 	}

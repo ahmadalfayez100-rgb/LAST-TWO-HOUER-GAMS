@@ -91,6 +91,9 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "L2H|Weapon")
 	bool ServerRefillClip();
 
+	/** Server only. A refill nobody pays for (the prepaid magazine). False when there is nothing to refill. */
+	bool RefillClipFree() { return RefillClip(true); }
+
 	/** Sets the replicated aim state. The speed and FOV halves are applied by the aim ability. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "L2H|Weapon")
 	void ServerSetAiming(bool bNewAiming);
@@ -111,6 +114,8 @@ public:
 	void PlayReloadAnimation();
 
 protected:
+	bool RefillClip(bool bFree);
+
 	/**
 	 * Every machine runs this, and each draws its own copy. An animation is local presentation, so a server
 	 * that played it alone would leave every client's weapon and arms still.

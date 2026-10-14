@@ -11,6 +11,7 @@
 #include "GameFramework/Pawn.h"
 #include "Net/UnrealNetwork.h"
 #include "Character/L2H_BaseCharacter.h"
+#include "Item/L2H_InventoryComponent.h"
 #include "Time/L2H_LevelTimeConfig.h"
 #include "Time/L2H_TimeDirector.h"
 #include "Time/L2HTimeLog.h"
@@ -246,6 +247,11 @@ bool UL2H_WeaponComponent::ServerConsumeRound()
 
 bool UL2H_WeaponComponent::ServerRefillClip()
 {
+	return RefillClip(false);
+}
+
+bool UL2H_WeaponComponent::RefillClip(bool bFree)
+{
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		return false;
@@ -267,7 +273,26 @@ bool UL2H_WeaponComponent::ServerRefillClip()
 	// Rounds are bought with the clock. Never so many that the purchase itself would end the player: a
 	// reload buys what the clock can pay for while leaving at least a second, and nothing when it cannot.
 	int32 Rounds = Data->Data.ClipSize - AmmoInClip;
-	const float Price = GetRoundPrice();
+	const float Price = bFree ? 0.0f : GetRoundPrice();
+
+	// A prepaid magazine in the bag is spent before the clock. It comes back through the bag's use path
+	// (which calls RefillClipFree), so the cell is emptied the same way any tool's is.
+	if (Price > 0.0f)
+	{
+		if (UL2H_InventoryComponent* Bag = GetOwner()->FindComponentByClass<UL2H_InventoryComponent>())
+		{
+			const int32 Cell = Bag->FindToolCell(EL2H_ItemUseEffect::PrepaidMagazine);
+			if (Cell != INDEX_NONE)
+			{
+				const int32 Before = AmmoInClip;
+				Bag->UseOnServer(Cell);
+				if (AmmoInClip > Before)
+				{
+					return true;
+				}
+			}
+		}
+	}
 	AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this);
 	if (Price > 0.0f && Director)
 	{

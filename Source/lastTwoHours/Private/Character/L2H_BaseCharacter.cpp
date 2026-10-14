@@ -40,6 +40,8 @@
 #include "UI/L2H_TimeMenuWidget.h"
 #include "UI/L2H_TimeRequestPromptWidget.h"
 #include "World/L2H_CheckpointTerminal.h"
+#include "World/L2H_PingMarker.h"
+#include "Enemy/L2H_EnemyRobot.h"
 #include "Time/L2H_AbilitySystemComponent.h"
 #include "Time/L2H_TimeAttributeSet.h"
 #include "Grab/L2H_MassProfileComponent.h"
@@ -613,6 +615,8 @@ void AL2H_BaseCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	DOREPLIFETIME(AL2H_BaseCharacter, bHubBankOpen);
 	DOREPLIFETIME(AL2H_BaseCharacter, HubCarryAllowance);
 	DOREPLIFETIME(AL2H_BaseCharacter, HubCarried);
+	DOREPLIFETIME(AL2H_BaseCharacter, LastHubId);
+	DOREPLIFETIME(AL2H_BaseCharacter, ShieldHits);
 	DOREPLIFETIME(AL2H_BaseCharacter, LastTransferGiveTime);
 	DOREPLIFETIME(AL2H_BaseCharacter, PendingReviveSeconds);
 
@@ -818,8 +822,13 @@ void AL2H_BaseCharacter::Input_Interact(const FInputActionValue& Value)
 {
 	// Started rather than Triggered: one press is one grab or one drop, and a held button must not
 	// pick the object straight back up on the next frame.
-	if (IsDowned())
+	// On the floor the button only swaps the view between the body and the partner.
+	if (IsDowned() || IsDead())
 	{
+		if (IsLocallyControlled() && DownViewSince >= 0.0f)
+		{
+			bDownViewOwnBody = !bDownViewOwnBody;
+		}
 		return;
 	}
 
@@ -1319,6 +1328,8 @@ void AL2H_BaseCharacter::Tick(float DeltaSeconds)
 	UpdateThrowPreview();
 	UpdateClimbDownMove(DeltaSeconds);
 	UpdateReviveHold();
+	UpdateDownView();
+	RecordRewindSample();
 
 	// Jump held long enough while hanging: the free jump fires without waiting for the release.
 	if (bHangJumpPending && GetWorld() && GetWorld()->GetTimeSeconds() - HangJumpPressTime >= HangHoldTime)
@@ -2942,6 +2953,13 @@ void AL2H_BaseCharacter::Input_Menu(const FInputActionValue& Value)
 		return;
 	}
 
+	// Away from a terminal the key pings where the view looks.
+	if (!CurrentTerminal)
+	{
+		TryPing();
+		return;
+	}
+
 	TryOpenTerminalMenu();
 }
 
@@ -3885,4 +3903,269 @@ void AL2H_BaseCharacter::BeginShardAbsorb(float WindowSeconds)
 	});
 
 	World->GetTimerManager().SetTimer(ShardAbsorbTimer, Release, Window, /*bLoop=*/false);
+}
+
+// -------------------------------------------------------------------------------------------
+// On the floor: the view follows the partner, and anyone can ping
+// -------------------------------------------------------------------------------------------
+
+AL2H_BaseCharacter* AL2H_BaseCharacter::FindPartner() const
+{
+	AL2H_BaseCharacter* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AL2H_BaseCharacter> It(World); It; ++It)
+		{
+			AL2H_BaseCharacter* Other = *It;
+			if (!Other || Other == this || Other->IsPendingKillPending())
+			{
+				continue;
+			}
+			const float DistSq = FVector::DistSquared(Other->GetActorLocation(), GetActorLocation());
+			if (DistSq < BestDistSq)
+			{
+				BestDistSq = DistSq;
+				Best = Other;
+			}
+		}
+	}
+	return Best;
+}
+
+void AL2H_BaseCharacter::UpdateDownView()
+{
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	const bool bDown = IsDead() || IsDowned();
+	if (!bDown)
+	{
+		DownViewSince = -1.0f;
+		bDownViewOwnBody = false;
+	}
+	else if (DownViewSince < 0.0f)
+	{
+		DownViewSince = Now;
+	}
+
+	// The fall itself is shown on the body; after that the stage is the partner's, so the view goes to
+	// them -- unless they are down too (the run is about to rewind) or the player asked for the body.
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(this);
+	const float Delay = Config ? Config->SpectateDelay : 2.0f;
+	AL2H_BaseCharacter* Partner = bDown && !bDownViewOwnBody && Now - DownViewSince >= Delay ? FindPartner() : nullptr;
+	if (Partner && (Partner->IsDead() || Partner->IsDowned()))
+	{
+		Partner = nullptr;
+	}
+
+	USceneComponent* Rig = DownViewRig.Get();
+	if (Partner)
+	{
+		if (!Rig)
+		{
+			// GASP's camera rig evaluates around its own component, so moving the component moves the
+			// view, and the rig keeps reading this player's control rotation: they orbit the partner with
+			// their own stick, and a ping goes where they look.
+			TInlineComponentArray<USceneComponent*> Components(this);
+			for (USceneComponent* Component : Components)
+			{
+				if (Component && Component->GetFName() == TEXT("GameplayCamera"))
+				{
+					Rig = Component;
+					break;
+				}
+			}
+			if (!Rig)
+			{
+				Rig = CameraBoom;
+			}
+			if (!Rig)
+			{
+				return;
+			}
+			DownViewRig = Rig;
+			// The authored offset, not the current one: on the floor the rig may already have been moved
+			// with the body, and the view at the partner should sit at standing height.
+			const USceneComponent* Template = Cast<USceneComponent>(Rig->GetArchetype());
+			DownViewRigRelative = Template ? Template->GetRelativeLocation() : Rig->GetRelativeLocation();
+			Rig->SetUsingAbsoluteLocation(true);
+		}
+		// Held at the partner the way it is held at this body.
+		Rig->SetWorldLocation(Partner->GetActorTransform().TransformPosition(DownViewRigRelative));
+	}
+	else if (Rig)
+	{
+		Rig->SetUsingAbsoluteLocation(false);
+		Rig->SetRelativeLocation(DownViewRigRelative);
+		DownViewRig.Reset();
+	}
+}
+
+void AL2H_BaseCharacter::TryPing()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	UWorld* World = GetWorld();
+	if (!PC || !World || !IsLocallyControlled())
+	{
+		return;
+	}
+
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(this);
+	const float Now = World->GetTimeSeconds();
+	if (Now - LastPingTime < (Config ? Config->PingCooldown : 1.0f))
+	{
+		return;
+	}
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+	// Through the players: a view orbiting the partner starts behind them.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HPing), false);
+	for (TActorIterator<AL2H_BaseCharacter> It(World); It; ++It)
+	{
+		Params.AddIgnoredActor(*It);
+	}
+	if (CarriedActor)
+	{
+		Params.AddIgnoredActor(CarriedActor);
+	}
+
+	FHitResult Hit;
+	const FVector End = ViewLocation + ViewRotation.Vector() * (Config ? Config->PingRange : 6000.0f);
+	if (!World->LineTraceSingleByChannel(Hit, ViewLocation, End, ECC_Visibility, Params))
+	{
+		return;
+	}
+
+	LastPingTime = Now;
+	ServerPing(Hit.ImpactPoint, Hit.GetActor());
+}
+
+void AL2H_BaseCharacter::ServerPing_Implementation(FVector_NetQuantize Location, AActor* HitActor)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(this);
+	const float Now = World->GetTimeSeconds();
+	if (Now - ServerLastPingTime < (Config ? Config->PingCooldown : 1.0f) * 0.5f)
+	{
+		return;
+	}
+	ServerLastPingTime = Now;
+
+	// An enemy near the point counts as the target even when the trace caught the floor beside it.
+	AActor* Enemy = HitActor && HitActor->IsA<AL2H_EnemyRobot>() ? HitActor : nullptr;
+	if (!Enemy)
+	{
+		for (TActorIterator<AL2H_EnemyRobot> It(World); It; ++It)
+		{
+			if (!It->IsDead() && FVector::DistSquared(It->GetActorLocation(), FVector(Location)) < FMath::Square(150.0f))
+			{
+				Enemy = *It;
+				break;
+			}
+		}
+	}
+
+	if (AActor* Previous = ActivePing.Get())
+	{
+		Previous->Destroy();
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	const FVector Where = Enemy ? Enemy->GetActorLocation() - FVector(0.0f, 0.0f, 90.0f) : FVector(Location);
+	AL2H_PingMarker* Marker = World->SpawnActor<AL2H_PingMarker>(AL2H_PingMarker::StaticClass(), Where, FRotator::ZeroRotator, SpawnParams);
+	if (!Marker)
+	{
+		return;
+	}
+	Marker->Setup(Enemy != nullptr, FLinearColor(1.0f, 0.85f, 0.1f));
+	Marker->SetLifeSpan(Config ? Config->PingLifetime : 6.0f);
+	if (Enemy)
+	{
+		Marker->AttachToActor(Enemy, FAttachmentTransformRules::KeepWorldTransform);
+	}
+	ActivePing = Marker;
+
+	L2HTime::LogImportant(FString::Printf(TEXT("Ping: %s marked %s"), *GetNameSafe(this),
+		Enemy ? *GetNameSafe(Enemy) : *FVector(Location).ToCompactString()));
+}
+
+// -------------------------------------------------------------------------------------------
+// Rewind watch history
+// -------------------------------------------------------------------------------------------
+
+void AL2H_BaseCharacter::RecordRewindSample()
+{
+	const UWorld* World = GetWorld();
+	if (!HasAuthority() || !World)
+	{
+		return;
+	}
+	const float Now = World->GetTimeSeconds();
+	if (Now < NextRewindSampleTime)
+	{
+		return;
+	}
+	NextRewindSampleTime = Now + 0.2f;
+
+	// Only safe ground counts: a place mid-jump, on a ledge or in a climb would put the player back
+	// into a move the watch cannot restart. And nothing after the fall, so the watch still reaches
+	// back past it.
+	const UCharacterMovementComponent* Move = GetCharacterMovement();
+	if (IsDead() || IsDowned() || IsBeingCarried() || IsBusyTraversing() || !Move || !Move->IsMovingOnGround())
+	{
+		return;
+	}
+
+	FRewindSample Sample;
+	Sample.Time = Now;
+	Sample.Location = GetActorLocation();
+	Sample.Rotation = GetActorRotation();
+	Sample.Health = AL2H_TimeDirector::GetHealthFor(this);
+	RewindHistory.Add(Sample);
+
+	// About twelve seconds is plenty for a watch that goes back five.
+	while (RewindHistory.Num() > 0 && Now - RewindHistory[0].Time > 12.0f)
+	{
+		RewindHistory.RemoveAt(0, EAllowShrinking::No);
+	}
+}
+
+bool AL2H_BaseCharacter::FindRewindSample(float Seconds, FRewindSample& OutSample) const
+{
+	if (RewindHistory.Num() == 0)
+	{
+		return false;
+	}
+
+	// On the floor the clock for "how far back" starts at the fall (the last sample), not at now.
+	const UWorld* World = GetWorld();
+	const float Reference = (IsDead() || IsDowned()) ? RewindHistory.Last().Time : (World ? World->GetTimeSeconds() : 0.0f);
+	const float Target = Reference - Seconds;
+
+	// The newest sample at or before the target; failing that the oldest there is.
+	OutSample = RewindHistory[0];
+	for (const FRewindSample& Sample : RewindHistory)
+	{
+		if (Sample.Time > Target)
+		{
+			break;
+		}
+		OutSample = Sample;
+	}
+	return true;
 }

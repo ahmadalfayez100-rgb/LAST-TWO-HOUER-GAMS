@@ -43,6 +43,10 @@ struct FL2H_SavedPlayer
 	/** Health as it was here. A rewind used to refill it, which made dying a free heal. */
 	UPROPERTY(BlueprintReadOnly, Category = "L2H|Save")
 	float Health = -1.0f;
+
+	/** The last hub whose stage this player finished, so the clock knows which hub is next after a rewind. */
+	UPROPERTY(BlueprintReadOnly, Category = "L2H|Save")
+	FName LastHubId;
 };
 
 /**

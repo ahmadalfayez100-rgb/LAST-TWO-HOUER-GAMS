@@ -58,6 +58,7 @@ void AL2H_ReviveStation::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AL2H_ReviveStation, ChargesUsed);
+	DOREPLIFETIME(AL2H_ReviveStation, bPortable);
 }
 
 void AL2H_ReviveStation::BeginPlay()
@@ -105,6 +106,11 @@ void AL2H_ReviveStation::Scan()
 		L2HTime::LogImportant(FString::Printf(TEXT("ReviveStation: %s revived %s (+%.0fs), %d charge(s) left"),
 			*GetNameSafe(this), *GetNameSafe(Pawn), ReviveSeconds, GetChargesLeft()));
 
+		if (bPortable)
+		{
+			Destroy();
+			return;
+		}
 		if (GetChargesLeft() <= 0)
 		{
 			return;
@@ -114,10 +120,43 @@ void AL2H_ReviveStation::Scan()
 
 void AL2H_ReviveStation::Refill()
 {
+	if (bPortable)
+	{
+		// A beacon belongs to the stage it was placed in.
+		if (HasAuthority())
+		{
+			Destroy();
+		}
+		return;
+	}
 	if (HasAuthority() && ChargesUsed != 0)
 	{
 		ChargesUsed = 0;
 		OnRep_ChargesUsed();
+	}
+}
+
+void AL2H_ReviveStation::MakePortable(float InReviveSeconds)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bPortable = true;
+	Charges = 1;
+	ChargesUsed = 0;
+	ReviveSeconds = FMath::Max(InReviveSeconds, 1.0f);
+	OnRep_Portable();
+}
+
+void AL2H_ReviveStation::OnRep_Portable()
+{
+	if (bPortable && Marker)
+	{
+		Marker->Color = FLinearColor(0.2f, 0.8f, 1.0f);
+		Marker->Label = NSLOCTEXT("L2HStation", "Beacon", "BEACON: carry a downed partner here");
+		Marker->PadRadius = 120.0f;
+		Marker->Refresh();
 	}
 }
 
@@ -128,7 +167,7 @@ void AL2H_ReviveStation::OnRep_ChargesUsed()
 
 void AL2H_ReviveStation::L2H_GetWorldStateId_Implementation(FGuid& OutId)
 {
-	OutId = L2H_MakeWorldStateId(this);
+	OutId = bPortable ? FGuid() : L2H_MakeWorldStateId(this);
 }
 
 void AL2H_ReviveStation::L2H_CaptureWorldState_Implementation(TMap<FName, bool>& OutFlags)

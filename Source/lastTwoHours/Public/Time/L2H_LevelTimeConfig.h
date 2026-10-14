@@ -10,6 +10,7 @@
 class AL2H_TimeShard;
 class UL2H_ItemDataAsset;
 class UGameplayEffect;
+class USoundBase;
 
 /**
  * Per-level tuning for the TimeCore loop.
@@ -315,6 +316,66 @@ public:
 	/** Landing speed at which a fall takes all of MaxHealth. Damage scales linearly in between. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Health", meta = (ClampMin = "0.0"))
 	float FallDamageLethalSpeed = 2300.0f;
+
+	// -------------------------------------------------------------------------------------------
+	// Warnings. The run ends hard when both players fall, so the clock says so before it happens: it
+	// estimates the walk to the next hub and turns red, with a sound, once the clock no longer covers it.
+	// -------------------------------------------------------------------------------------------
+
+	/** Speed the estimate assumes, in cm/s. A jog, not a sprint: the warning should come early, not late. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning", meta = (ClampMin = "50.0"))
+	float HubTravelSpeed = 450.0f;
+
+	/** Straight-line distance times this is the route length the estimate assumes (walls, climbs). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning", meta = (ClampMin = "1.0"))
+	float HubPathFactor = 1.3f;
+
+	/** Warn when the clock is below estimate x HubWarnRatio + HubWarnMargin. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning", meta = (ClampMin = "1.0"))
+	float HubWarnRatio = 1.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning", meta = (ClampMin = "0.0"))
+	float HubWarnMargin = 10.0f;
+
+	/** Played on the warned player's screen when the warning starts, and again every WarningRepeat seconds. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning")
+	TObjectPtr<USoundBase> WarningSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Warning", meta = (ClampMin = "1.0"))
+	float WarningRepeat = 5.0f;
+
+	// -------------------------------------------------------------------------------------------
+	// The player on the floor keeps a part: their view moves to the partner, and they can mark things
+	// for the partner (enemies, a route) with a ping both screens see.
+	// -------------------------------------------------------------------------------------------
+
+	/** Seconds after falling before the view moves to the partner (the fall itself is worth seeing). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Down", meta = (ClampMin = "0.0"))
+	float SpectateDelay = 2.0f;
+
+	/** Seconds a ping stays in the world. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Down", meta = (ClampMin = "0.5"))
+	float PingLifetime = 6.0f;
+
+	/** Seconds between two pings from one player. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Down", meta = (ClampMin = "0.0"))
+	float PingCooldown = 1.0f;
+
+	/** How far a ping reaches along the view, in cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Down", meta = (ClampMin = "100.0"))
+	float PingRange = 6000.0f;
+
+	// -------------------------------------------------------------------------------------------
+	// Enemies give back some of what a fight cost: each one drops shards when it dies.
+	// -------------------------------------------------------------------------------------------
+
+	/** Shards an enemy drops on death. 0 turns the drop off. Uses ShardClass. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Shards", meta = (ClampMin = "0"))
+	int32 EnemyShardCount = 1;
+
+	/** Seconds each enemy shard hands back. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Shards", meta = (ClampMin = "1.0"))
+	float EnemyShardValue = 5.0f;
 
 	/** Instant, SetByCaller on Data.Health.Damage. Every hit funnels through this. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Effects")

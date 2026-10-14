@@ -189,6 +189,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "L2H|Time")
 	bool IsTimeStopped() const { return bTimeStopped; }
 
+	/**
+	 * Server only. Spawns a shard beside Target. ApplyTimeDamage calls it once a hit is heavy enough (so
+	 * "a big hit is recoverable" is a rule of the authority, not something each hazard remembers), and a
+	 * dying enemy calls it to give back part of what the fight cost. TimeValue 0 uses ShardTimeValue.
+	 */
+	void SpillShardAt(AActor* Target, float TimeValue = 0.0f);
+
 	// ---------------------------------------------------------------------------------------
 	// Hubs. Server only, called by the hub's trigger.
 	// ---------------------------------------------------------------------------------------
@@ -331,12 +338,6 @@ protected:
 	void RegisterPawn(AL2H_BaseCharacter* Character);
 	void ApplyPassiveDrain(AL2H_BaseCharacter* Character);
 
-	/**
-	 * Spawns a shard at Target for the spill path. Called from ApplyTimeDamage once a hit turns out
-	 * to be heavy enough, which is what keeps "a big hit is recoverable" a rule of the authority
-	 * rather than something each hazard has to remember to do.
-	 */
-	void SpillShardAt(AActor* Target);
 	void HandleTimeChangedFor(AL2H_BaseCharacter* Character, float NewValue);
 	void CreateSecondLocalPlayer();
 

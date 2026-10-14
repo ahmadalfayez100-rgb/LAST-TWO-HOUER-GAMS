@@ -104,6 +104,17 @@ private:
 	void HandleAttributeChanged(const FOnAttributeChangeData& Data);
 	void RefreshInfo();
 	UTextBlock* MakeTextIfMissing(const TCHAR* Name, int32 FontSize);
+
+	/**
+	 * The hub this player is walking to: the nearest hub other than the one whose stage they last finished.
+	 * Null when the level has none, or while the player stands in one.
+	 */
+	const class AL2H_CheckpointTerminal* FindNextHub(const AL2H_BaseCharacter* Character) const;
+
+	/** True while the clock no longer covers the estimated walk to the next hub. */
+	bool bHubWarning = false;
+	float NextWarningSoundAt = 0.0f;
+	FText WarningHubName;
 	float LastSeenTime = -1.0f;
 	float DeltaShownUntil = 0.0f;
 	float InfoRefreshIn = 0.0f;

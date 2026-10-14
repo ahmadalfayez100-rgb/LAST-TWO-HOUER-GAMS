@@ -52,7 +52,7 @@ public:
 	AL2H_CheckpointTerminal();
 
 	/** Which half of the system this instance is. Set per placed actor. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Checkpoint")
+	UPROPERTY(EditAnywhere, ReplicatedUsing = OnRep_Identity, BlueprintReadOnly, Category = "L2H|Checkpoint")
 	EL2H_CheckpointTier Tier = EL2H_CheckpointTier::Spot;
 
 	/**
@@ -62,11 +62,11 @@ public:
 	 * mesh, without the run losing the record of having been there -- the actor's name would change
 	 * with it. It is also what the run's travel list names, so it should stay readable.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Checkpoint")
+	UPROPERTY(EditAnywhere, ReplicatedUsing = OnRep_Identity, BlueprintReadOnly, Category = "L2H|Checkpoint")
 	FName CheckpointId;
 
 	/** Shown as the menu header. Empty falls back to a generic title in the widget. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Checkpoint")
+	UPROPERTY(EditAnywhere, ReplicatedUsing = OnRep_Identity, BlueprintReadOnly, Category = "L2H|Checkpoint")
 	FText DisplayName;
 
 	/**
@@ -124,6 +124,13 @@ protected:
 	TObjectPtr<UL2H_StationMarker> Marker;
 
 	virtual void OnConstruction(const FTransform& Transform) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/** Tier, id and name travel to clients: a station spawned at runtime sets them after the spawn. */
+	UFUNCTION()
+	void OnRep_Identity();
+
+	void RefreshMarker();
 
 	UPROPERTY(Transient)
 	TArray<TWeakObjectPtr<AL2H_BaseCharacter>> PawnsInRange;

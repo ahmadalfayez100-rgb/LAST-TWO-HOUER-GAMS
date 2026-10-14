@@ -247,14 +247,15 @@ private:
 	UFUNCTION(Server, Reliable)
 	void ServerExitCover();
 
+	/** The owner's side goes with the request: the two machines picked different sides and played different exits. */
 	UFUNCTION(Server, Reliable)
-	void ServerBeginExit();
+	void ServerBeginExit(bool bRight);
 
 	UFUNCTION()
 	void OnRep_InCover();
 
 	UFUNCTION()
-	void OnRep_Phase();
+	void OnRep_Phase(EL2H_CoverPhase OldPhase);
 
 	/** Owner-side: stands up over a low wall while aiming, crouches back behind it after. */
 	void UpdateStance(bool bAiming);
@@ -299,6 +300,13 @@ private:
 	bool bTransferHigh = false;
 
 	bool bJumpPressed = false;
+
+	/**
+	 * Until this time (world seconds) the leaning side is not re-read from velocity or the stick: right after
+	 * an entry or a crossing the side is the clip's, and a network correction's stray velocity on the owner
+	 * flipped it (the owner showed the right idle while every other machine showed the left).
+	 */
+	float SideLockUntil = 0.0f;
 
 	/** Whether this machine's local player currently has CoverInputContext added. */
 	bool bCoverInputAdded = false;

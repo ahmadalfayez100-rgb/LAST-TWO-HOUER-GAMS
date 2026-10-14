@@ -14,6 +14,9 @@
 #include "Components/PanelWidget.h"
 #include "Components/CanvasPanelSlot.h"
 #include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
+#include "World/L2H_CheckpointTerminal.h"
 
 #define LOCTEXT_NAMESPACE "L2HTimeClock"
 
@@ -145,6 +148,13 @@ void UL2H_TimeClockWidget::NativeTick(const FGeometry& MyGeometry, float InDelta
 		}
 	}
 
+	// A warned clock pulses between the low and the downed colour, so it is noticed without being read.
+	if (bHubWarning && TimeText)
+	{
+		const float Pulse = 0.5f + 0.5f * FMath::Sin(Now * 2.0f * PI * 1.5f);
+		TimeText->SetColorAndOpacity(FSlateColor(FMath::Lerp(LowColor, DownedColor, Pulse)));
+	}
+
 	InfoRefreshIn -= InDeltaTime;
 	if (InfoRefreshIn <= 0.0f)
 	{
@@ -170,6 +180,10 @@ void UL2H_TimeClockWidget::RefreshInfo()
 
 	TArray<FString> Lines;
 	Lines.Add(FString::Printf(TEXT("Bank %d"), FMath::RoundToInt(Character->GetChrons())));
+	if (Character->GetShieldHits() > 0)
+	{
+		Lines.Add(FString::Printf(TEXT("Shield %d"), Character->GetShieldHits()));
+	}
 
 	// The partner's clock, and their state, because the run only moves on as a pair.
 	if (const UWorld* World = GetWorld())
@@ -197,6 +211,38 @@ void UL2H_TimeClockWidget::RefreshInfo()
 		}
 	}
 
+	// The walk to the next hub against the clock. The run ends hard when both fall, so the clock says
+	// it will not make it while there is still time to choose: hurry, transfer, or spend a tool.
+	const bool bWasWarning = bHubWarning;
+	bHubWarning = false;
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(Character);
+	const AL2H_CheckpointTerminal* Hub = Character->IsDead() || Character->IsDowned() ? nullptr : FindNextHub(Character);
+	if (Hub && Config)
+	{
+		const float Distance = FVector::Dist(Character->GetActorLocation(), Hub->GetActorLocation());
+		const float Needed = Distance * Config->HubPathFactor / FMath::Max(Config->HubTravelSpeed, 1.0f);
+		const float Time = AL2H_TimeDirector::GetTimeFor(Character);
+		bHubWarning = Time < Needed * Config->HubWarnRatio + Config->HubWarnMargin;
+		WarningHubName = Hub->DisplayName.IsEmpty() ? LOCTEXT("HubFallbackName", "the hub") : Hub->DisplayName;
+		Lines.Add(FString::Printf(TEXT("%s  %.0f m  ~%.0f s"), *(Hub->DisplayName.IsEmpty() ? FString(TEXT("Hub")) : Hub->DisplayName.ToString()),
+			Distance / 100.0f, Needed));
+
+		const UWorld* World = GetWorld();
+		const float Now = World ? World->GetRealTimeSeconds() : 0.0f;
+		if (bHubWarning && (!bWasWarning || Now >= NextWarningSoundAt))
+		{
+			if (Config->WarningSound)
+			{
+				UGameplayStatics::PlaySound2D(this, Config->WarningSound);
+			}
+			NextWarningSoundAt = Now + Config->WarningRepeat;
+		}
+	}
+	if (bHubWarning != bWasWarning)
+	{
+		RefreshClock();
+	}
+
 	if (Character->IsHubBankOpen())
 	{
 		Lines.Add(FString::Printf(TEXT("Stage done -- carrying %.0f/%.0f s into the next (time menu)"),
@@ -204,6 +250,42 @@ void UL2H_TimeClockWidget::RefreshInfo()
 	}
 
 	InfoText->SetText(FText::FromString(FString::Join(Lines, TEXT("\n"))));
+}
+
+const AL2H_CheckpointTerminal* UL2H_TimeClockWidget::FindNextHub(const AL2H_BaseCharacter* Character) const
+{
+	const UWorld* World = GetWorld();
+	if (!World || !Character)
+	{
+		return nullptr;
+	}
+
+	const AL2H_CheckpointTerminal* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<AL2H_CheckpointTerminal> It(const_cast<UWorld*>(World)); It; ++It)
+	{
+		const AL2H_CheckpointTerminal* Hub = *It;
+		if (!Hub || Hub->Tier != EL2H_CheckpointTier::Hub)
+		{
+			continue;
+		}
+		if (Hub->IsPawnInRange(Character))
+		{
+			// Standing in one: the clock is stopped and there is nothing to warn about.
+			return nullptr;
+		}
+		if (Hub->GetCheckpointId() == Character->GetLastHubId())
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared(Hub->GetActorLocation(), Character->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = Hub;
+		}
+	}
+	return Best;
 }
 
 void UL2H_TimeClockWidget::SetTimeSource(AL2H_BaseCharacter* InCharacter)
@@ -289,6 +371,11 @@ void UL2H_TimeClockWidget::RefreshClock()
 		{
 			StateText->SetText(DescribeDown(Character, bDead));
 			StateText->SetColorAndOpacity(FSlateColor(bDead ? DeadColor : DownedColor));
+		}
+		else if (bHubWarning)
+		{
+			StateText->SetText(FText::Format(LOCTEXT("HubWarning", "NOT ENOUGH TIME TO REACH {0}"), WarningHubName));
+			StateText->SetColorAndOpacity(FSlateColor(DownedColor));
 		}
 		else
 		{

@@ -424,6 +424,11 @@ AL2H_ItemPickup* UL2H_InventoryComponent::ServerDropItemAt(int32 Index)
 	return Dropped;
 }
 
+void UL2H_InventoryComponent::UseOnServer(int32 Index)
+{
+	ServerUseItem_Implementation(Index);
+}
+
 void UL2H_InventoryComponent::ServerUseItem_Implementation(int32 Index)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() || !Slots.IsValidIndex(Index))

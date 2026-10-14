@@ -29,6 +29,14 @@ enum class EL2H_ItemUseEffect : uint8
 	TimeElixir UMETA(DisplayName = "Time Elixir"),
 	/** EffectMagnitude Health back to the user. */
 	HealthInjector UMETA(DisplayName = "Health Injector"),
+	/** The next EffectMagnitude hits land on the shield instead of Health (and so cost no seconds). */
+	TimeShield UMETA(DisplayName = "Time Shield"),
+	/** The user goes back EffectMagnitude seconds: where they stood and the Health they had. Also from a fresh death. */
+	RewindWatch UMETA(DisplayName = "Rewind Watch"),
+	/** A one-use revive point placed where the user stands: a body carried into it stands up with EffectMagnitude seconds. */
+	Beacon UMETA(DisplayName = "Beacon"),
+	/** One free reload of the weapon in hand. A reload in the field spends one before the clock. */
+	PrepaidMagazine UMETA(DisplayName = "Prepaid Magazine"),
 };
 
 USTRUCT(BlueprintType)
