@@ -161,6 +161,8 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 	TimeQuickMenuClass = UL2H_TimeQuickMenuWidget::StaticClass();
 	TimeQuickMenuContext = LoadObject<UInputMappingContext>(nullptr,
 		TEXT("/Game/L2HTime/Input/IMC_L2H_TimeMenu.IMC_L2H_TimeMenu"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	DebugMappingContext = LoadObject<UInputMappingContext>(nullptr,
+		TEXT("/Game/L2HTime/Input/IMC_L2H_Debug.IMC_L2H_Debug"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 
 	// Carry clips from the deliveryman pack, retargeted to UEFN. Defaults only; the Blueprint may override.
 	{
@@ -666,6 +668,14 @@ void AL2H_BaseCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 			{
 				L2HTime::LogImportant(TEXT("L2H_BaseCharacter: DefaultMappingContext is unset -- no input will fire"));
 			}
+#if !UE_BUILD_SHIPPING
+			// Development keys (teleport, ragdoll, pawn and visual cycling) live apart from the player's layout and
+			// never reach a shipping build.
+			if (DebugMappingContext)
+			{
+				Subsystem->AddMappingContext(DebugMappingContext, 1);
+			}
+#endif
 		}
 	}
 

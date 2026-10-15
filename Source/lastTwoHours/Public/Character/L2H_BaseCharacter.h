@@ -853,6 +853,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Input")
 	TObjectPtr<UInputMappingContext> DefaultMappingContext;
 
+	/** IMC_L2H_Debug: development keys, added on top of the default in non-shipping builds only. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Input")
+	TObjectPtr<UInputMappingContext> DebugMappingContext;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Input")
 	TObjectPtr<UInputAction> MoveAction;
 
