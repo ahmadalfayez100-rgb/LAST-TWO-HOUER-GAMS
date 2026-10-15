@@ -623,6 +623,8 @@ void AL2H_BaseCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	// The hook: every machine draws the rope to the anchor, so both points travel with the flag.
 	DOREPLIFETIME(AL2H_BaseCharacter, HookAnchor);
 	DOREPLIFETIME(AL2H_BaseCharacter, HookLandPoint);
+	DOREPLIFETIME(AL2H_BaseCharacter, bHookToLedge);
+	DOREPLIFETIME(AL2H_BaseCharacter, HookFaceYaw);
 	DOREPLIFETIME(AL2H_BaseCharacter, bHookSwinging);
 
 	// Socket before actor on purpose: both arrive in the same bunch and are applied in this order, so
@@ -2022,7 +2024,7 @@ void AL2H_BaseCharacter::UpdateAimBeam()
 	}
 }
 
-void AL2H_BaseCharacter::StartHookSwing(FVector Anchor, FVector SurfaceNormal)
+void AL2H_BaseCharacter::StartHookSwing(FVector Anchor, FVector SurfaceNormal, AActor* HitActor)
 {
 	UCharacterMovementComponent* Move = GetCharacterMovement();
 	UWorld* World = GetWorld();
@@ -2053,6 +2055,28 @@ void AL2H_BaseCharacter::StartHookSwing(FVector Anchor, FVector SurfaceNormal)
 		// over a ledge, onto a bar or along a wall is the movement system's job, and a jump press during
 		// or after the flight starts it (the hook stops steering as soon as one takes over).
 		Land = Anchor + Off * HookWallStandOff - FVector(0.0f, 0.0f, HalfHeight * 0.6f);
+	}
+
+	// Climbable geometry (DPTS tags it `climb`): the travel ends where DPTS can take over. Its in-air search only
+	// catches a ledge it faces with the capsule centre a little above the edge, and the wall landing above
+	// (hands at the hooked height) left the centre near a metre under it -- the body slid down past the ledge.
+	// So the edge is found (the top of the thing just behind the hooked point), and the body aims for it.
+	bHookToLedge = false;
+	if (HitActor && HitActor->ActorHasTag(TEXT("climb")) && SurfaceNormal.Z <= 0.7f)
+	{
+		const FVector Normal2D = SurfaceNormal.GetSafeNormal2D();
+		const FVector Probe = Anchor - Normal2D * 10.0f;
+		FCollisionQueryParams TopParams(FName(TEXT("L2H_HookLedge")), /*bTraceComplex=*/false, this);
+		FHitResult Top;
+		if (!Normal2D.IsNearlyZero()
+			&& World->LineTraceSingleByChannel(Top, Probe + FVector(0.0f, 0.0f, 250.0f), Probe - FVector(0.0f, 0.0f, 5.0f), ECC_Visibility, TopParams)
+			&& Top.ImpactNormal.Z > 0.7f && !Top.bStartPenetrating && Top.ImpactPoint.Z >= Anchor.Z - 5.0f)
+		{
+			const FVector Face = FVector(Anchor.X, Anchor.Y, 0.0f) + Normal2D * HookWallStandOff;
+			Land = FVector(Face.X, Face.Y, Top.ImpactPoint.Z + HookLedgeAboveEdge);
+			bHookToLedge = true;
+			HookFaceYaw = (-Normal2D).Rotation().Yaw;
+		}
 	}
 
 	// Never below the floor under the landing point: a hook low on a wall would otherwise aim the body
@@ -2138,6 +2162,11 @@ void AL2H_BaseCharacter::EndHookSwing(bool bArrived)
 	{
 		Move->Velocity *= HookArrivalKeep;
 
+		if (bHookToLedge)
+		{
+			HookCatchUntil = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + HookLedgeCatchWindow;
+		}
+
 		// Stopped beside a wall in the air: search again from here, so a ledge or a run wall within reach
 		// of where the hook left the body catches it on the way down.
 		StartAirParkourSearch();
@@ -2160,6 +2189,7 @@ void AL2H_BaseCharacter::OnRep_HookSwing()
 void AL2H_BaseCharacter::UpdateHookSwing(float DeltaSeconds)
 {
 	UpdateHookVisuals();
+	UpdateHookLedgeCatch();
 
 	if (!bHookSwinging || !HasAuthority())
 	{
@@ -2198,6 +2228,36 @@ void AL2H_BaseCharacter::UpdateHookSwing(float DeltaSeconds)
 	if (Elapsed > HookMaxFlightTime)
 	{
 		EndHookSwing(/*bArrived=*/false);
+	}
+}
+
+void AL2H_BaseCharacter::UpdateHookLedgeCatch()
+{
+	if (!bHookToLedge || !(HasAuthority() || IsLocallyControlled()))
+	{
+		return;
+	}
+
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	const bool bNearLedge = bHookSwinging && FVector::Dist(GetActorLocation(), FVector(HookLandPoint)) < 250.0f;
+	const bool bCatching = Now < HookCatchUntil;
+	if (!bNearLedge && !bCatching)
+	{
+		return;
+	}
+	if (IsParkourHanging())
+	{
+		// Caught: DPTS owns the body now.
+		HookCatchUntil = -1.0f;
+		return;
+	}
+
+	// Facing the wall on the last stretch and while the catch is asked for: the search only looks ahead.
+	SetActorRotation(FRotator(0.0f, HookFaceYaw, 0.0f));
+	if (bCatching)
+	{
+		StartAirParkourSearch();
 	}
 }
 
@@ -2251,6 +2311,11 @@ void AL2H_BaseCharacter::ServerSetWeaponAiming_Implementation(bool bNewAiming)
 void AL2H_BaseCharacter::ClientHookLaunch_Implementation(FVector_NetQuantize LaunchVelocity)
 {
 	LaunchCharacter(LaunchVelocity, /*bXYOverride=*/true, /*bZOverride=*/true);
+	// The arrival stop, not the launch: only once the body is at the ledge.
+	if (bHookToLedge && FVector::Dist(GetActorLocation(), FVector(HookLandPoint)) < 150.0f)
+	{
+		HookCatchUntil = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f) + HookLedgeCatchWindow;
+	}
 	StartAirParkourSearch();
 }
 

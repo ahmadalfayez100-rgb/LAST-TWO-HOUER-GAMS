@@ -113,7 +113,7 @@ void UL2H_Ability_Hook::ActivateAbility(
 		{
 			// The player travels. A wall has nothing to drag, so the hook throws the player on one arc
 			// to a landing point beside it (or on top of it, for a surface that faces up).
-			Character->StartHookSwing(WorldHit.ImpactPoint, WorldHit.ImpactNormal);
+			Character->StartHookSwing(WorldHit.ImpactPoint, WorldHit.ImpactNormal, WorldHit.GetActor());
 
 			L2HTime::LogImportant(FString::Printf(TEXT("Hook: grappling %s at %s"),
 				*GetNameSafe(WorldHit.GetActor()), *WorldHit.ImpactPoint.ToCompactString()));

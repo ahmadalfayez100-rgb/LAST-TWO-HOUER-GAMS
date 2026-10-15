@@ -698,9 +698,11 @@ public:
 	/**
 	 * Server only. Throws the pawn on an arc to the point the hook caught. SurfaceNormal is the normal of
 	 * what was hit; zero means "unknown" and the landing is taken just short of the point.
+	 * HitActor tagged `climb` (DPTS geometry) changes the landing: the body arrives facing it with the capsule
+	 * just above its top edge, where the DPTS in-air search catches the ledge.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "L2H|Hook")
-	void StartHookSwing(FVector Anchor, FVector SurfaceNormal = FVector::ZeroVector);
+	void StartHookSwing(FVector Anchor, FVector SurfaceNormal = FVector::ZeroVector, AActor* HitActor = nullptr);
 
 	/** Lets go of the rope. Callable on the owning client; it forwards to the server. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|Hook")
@@ -736,6 +738,17 @@ public:
 	/** Longest flight before the travel gives up, so a blocked path cannot pin a player mid-air. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Hook", meta = (ClampMin = "0.3"))
 	float HookMaxFlightTime = 3.0f;
+
+	/**
+	 * Hooking climbable geometry: the capsule centre arrives this far above the top edge. The DPTS catch only
+	 * finds a ledge it faces with the centre a little above the edge (caught at +13 cm, missed at -42 cm).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Hook")
+	float HookLedgeAboveEdge = 13.0f;
+
+	/** Seconds after arriving at a ledge during which the catch is asked for again every frame. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Hook", meta = (ClampMin = "0.0"))
+	float HookLedgeCatchWindow = 0.5f;
 
 	/** Unused since the travel became an arc; kept so Blueprint overrides still load. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Hook")
@@ -1222,6 +1235,19 @@ protected:
 
 	UPROPERTY(Replicated)
 	FVector_NetQuantize HookLandPoint = FVector::ZeroVector;
+
+	/** The travel ends at a ledge (climbable geometry was hooked): face HookFaceYaw and hand the body to DPTS. */
+	UPROPERTY(Replicated)
+	bool bHookToLedge = false;
+
+	UPROPERTY(Replicated)
+	float HookFaceYaw = 0.0f;
+
+	/** Local, per machine: until this time the ledge catch is asked for every frame. */
+	float HookCatchUntil = -1.0f;
+
+	/** Turns the body to the ledge and asks DPTS to catch, on the machines that run the DPTS search. */
+	void UpdateHookLedgeCatch();
 
 	/** Local, per machine: when this machine saw the travel start. */
 	float HookSwingStartTime = 0.0f;
