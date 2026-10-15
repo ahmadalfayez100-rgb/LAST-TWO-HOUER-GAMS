@@ -655,11 +655,6 @@ bool AL2H_TimeDirector::ApplyItemEffect(AL2H_BaseCharacter* User, const FL2H_Ite
 			*GetNameSafe(User), Data.EffectMagnitude));
 		return true;
 	}
-	}
-	return true;
-}
-
-void AL2H_TimeDirector::EndTimeStop()
 
 	case EL2H_ItemUseEffect::TimeShield:
 	{
@@ -738,6 +733,11 @@ void AL2H_TimeDirector::EndTimeStop()
 		Weapons->PlayReloadAnimation();
 		return true;
 	}
+	}
+	return true;
+}
+
+void AL2H_TimeDirector::EndTimeStop()
 {
 	if (!bTimeStopped)
 	{
@@ -919,12 +919,12 @@ void AL2H_TimeDirector::CompleteSegment(AL2H_CheckpointTerminal* Hub)
 		}
 		ApplyTimeTo(Pawn, NextTime);
 		Pawn->OpenHubBank(FMath::Min(Leftover, Config->MaxCarryOver));
+		Pawn->SetLastHubId(Hub->GetCheckpointId());
 
 		L2HTime::LogImportant(FString::Printf(TEXT("Hub: %s banked %.0fs (bank %.0f), next stage starts at %.0fs"),
 			*GetNameSafe(Pawn), Leftover, Pawn->GetChrons(), NextTime));
 	}
 
-		Pawn->SetLastHubId(Hub->GetCheckpointId());
 	// A new stage, new revive charges.
 	for (TActorIterator<AL2H_ReviveStation> It(GetWorld()); It; ++It)
 	{
@@ -1234,12 +1234,12 @@ TArray<AL2H_BaseCharacter*> AL2H_TimeDirector::GetRegisteredPawns() const
 
 void AL2H_TimeDirector::SpillShardAt(AActor* Target, float TimeValue)
 {
+	const float Value = TimeValue > 0.0f ? TimeValue : (Config ? Config->ShardTimeValue : 0.0f);
 	UWorld* World = GetWorld();
 	if (!HasAuthority() || !Target || !World || !Config || !Config->ShardClass)
 	{
 		return;
 	}
-	const float Value = TimeValue > 0.0f ? TimeValue : (Config ? Config->ShardTimeValue : 0.0f);
 
 	// Scattered off the victim's centre rather than dropped on it: a shard that spawns inside the
 	// player is absorbed on the very next tick, and then the lost seconds were never really in the
@@ -1625,11 +1625,6 @@ void AL2H_TimeDirector::ApplyHealthDamage(AActor* Target, float Amount)
 		return;
 	}
 
-	ApplyTimeEffect(Target, FMath::Abs(Amount), Config->HealthDamageEffect, GetHealthDamageMagnitudeName());
-
-	// Measured rather than assumed. The attribute set clamps the loss against the current value, so a
-	// 40-point hit on a player with 12 left costs 12 Health and -- crucially -- only 12 Health worth of
-	// seconds. Charging the full 40 would make the killing blow cost more than the life it took.
 	// A time shield takes the whole hit, so the hit costs neither Health nor seconds.
 	if (AL2H_BaseCharacter* Shielded = Cast<AL2H_BaseCharacter>(Target); Shielded && Amount > 0.0f && Shielded->GetShieldHits() > 0)
 	{
@@ -1639,6 +1634,11 @@ void AL2H_TimeDirector::ApplyHealthDamage(AActor* Target, float Amount)
 		return;
 	}
 
+	ApplyTimeEffect(Target, FMath::Abs(Amount), Config->HealthDamageEffect, GetHealthDamageMagnitudeName());
+
+	// Measured rather than assumed. The attribute set clamps the loss against the current value, so a
+	// 40-point hit on a player with 12 left costs 12 Health and -- crucially -- only 12 Health worth of
+	// seconds. Charging the full 40 would make the killing blow cost more than the life it took.
 	const float HealthAfter = GetHealthFor(Target);
 	const float DamageTaken = FMath::Max(HealthBefore - HealthAfter, 0.0f);
 
