@@ -6,6 +6,7 @@
 #include "Character/L2H_BaseCharacter.h"
 #include "Damage/L2H_DamageTypeDataAsset.h"
 #include "Damage/L2H_HitReactionComponent.h"
+#include "Enemy/L2H_EnemyRobot.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Time/L2HTimeLog.h"
@@ -203,6 +204,9 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 
 	// Spent whether or not it connected. A missed shot that costs nothing makes the magazine pointless.
 	Weapons->ServerConsumeRound();
+
+	// A shot is heard: robots within earshot come to look where it was fired from.
+	AL2H_EnemyRobot::ReportNoise(Character, Character->GetActorLocation(), ShotNoiseRadius);
 
 	// Played here rather than after the hit test, because a miss is still a shot and the gun has to move
 	// either way.

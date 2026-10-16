@@ -46,6 +46,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|WeaponFire")
 	FName HeadBoneName = TEXT("head");
 
+	/** Enemies within this many cm hear the shot and come to look where it was fired from. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|WeaponFire", meta = (ClampMin = "0.0"))
+	float ShotNoiseRadius = 2500.0f;
+
 private:
 	/** World time of the last shot this pawn fired, for the weapon's FireRate. Instanced per actor. */
 	float LastShotTime = -1000.0f;

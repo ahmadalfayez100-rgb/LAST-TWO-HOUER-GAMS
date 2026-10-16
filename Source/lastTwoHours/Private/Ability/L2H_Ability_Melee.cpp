@@ -119,6 +119,7 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 
 	if (Struck.Num() > 0)
 	{
+		AL2H_EnemyRobot::ReportNoise(Swinger, Swinger->GetActorLocation(), 700.0f);
 		// The impact is felt on the swinger's camera too, lightly.
 		Swinger->PlayCameraShakeOnOwner(Swinger->HitCameraShake, 0.35f);
 		L2HTime::LogImportant(FString::Printf(TEXT("Melee: %s struck %d target(s) for %.0f"), *GetNameSafe(Swinger), Struck.Num(), Damage));

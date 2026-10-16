@@ -53,6 +53,7 @@ public class lastTwoHours : ModuleRules
 			"Niagara",
 			// The test enemy is possessed by a plain AAIController so its movement input has a controller.
 			"AIModule",
+			"NavigationSystem",
 		});
 	}
 }

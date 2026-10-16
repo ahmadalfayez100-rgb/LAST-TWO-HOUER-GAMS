@@ -37,6 +37,15 @@ public:
 	/** True while Who is inside a closet with its doors shut. */
 	static bool IsHiding(const AActor* Who);
 
+	/** The closet Who is inside (doors open or shut), or null. */
+	static AL2H_HidingCloset* FindClosetOf(const AActor* Who);
+
+	/** Server: an enemy pulls the doors open; the one inside is put out in front. False when nobody is inside. */
+	bool ForceOpen();
+
+	/** Where something standing in front of the closet faces it from. */
+	FVector GetFrontPoint(float Distance) const;
+
 	UFUNCTION(BlueprintPure, Category = "L2H|Closet")
 	AL2H_BaseCharacter* GetOccupant() const { return Occupant; }
 

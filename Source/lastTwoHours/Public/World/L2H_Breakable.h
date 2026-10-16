@@ -72,6 +72,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Breakable")
 	TObjectPtr<UL2H_ItemDataAsset> LootItem;
 
+	/** Enemies within this many cm hear it break and come to look. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Breakable", meta = (ClampMin = "0.0"))
+	float BreakNoiseRadius = 900.0f;
+
 	/** How hard the pieces fly apart, in cm/s. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Breakable", meta = (ClampMin = "0.0"))
 	float PieceSpeed = 350.0f;

@@ -14,6 +14,7 @@
 #include "Sound/SoundBase.h"
 #include "Time/L2HTimeLog.h"
 #include "Time/L2H_TimeDirector.h"
+#include "Enemy/L2H_EnemyRobot.h"
 
 AL2H_Breakable::AL2H_Breakable()
 {
@@ -78,6 +79,7 @@ void AL2H_Breakable::Break(AActor* Breaker)
 	}
 	bBroken = true;
 	ShowBroken();
+	AL2H_EnemyRobot::ReportNoise(this, GetActorLocation(), BreakNoiseRadius);
 
 	// What it held comes out where it stood.
 	if (AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this))

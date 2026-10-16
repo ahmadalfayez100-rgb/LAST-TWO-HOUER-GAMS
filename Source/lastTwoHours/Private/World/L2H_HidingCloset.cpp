@@ -169,6 +169,39 @@ bool AL2H_HidingCloset::IsHiding(const AActor* Who)
 	return false;
 }
 
+AL2H_HidingCloset* AL2H_HidingCloset::FindClosetOf(const AActor* Who)
+{
+	UWorld* World = Who ? Who->GetWorld() : nullptr;
+	if (!World)
+	{
+		return nullptr;
+	}
+	for (TActorIterator<AL2H_HidingCloset> It(World); It; ++It)
+	{
+		if (It->Occupant == Who)
+		{
+			return *It;
+		}
+	}
+	return nullptr;
+}
+
+bool AL2H_HidingCloset::ForceOpen()
+{
+	if (!HasAuthority() || !Occupant || !bInside)
+	{
+		return false;
+	}
+	L2HTime::LogImportant(FString::Printf(TEXT("Closet: %s is pulled out of %s"), *GetNameSafe(Occupant), *GetNameSafe(this)));
+	Leave();
+	return true;
+}
+
+FVector AL2H_HidingCloset::GetFrontPoint(float Distance) const
+{
+	return GetActorTransform().TransformPosition(BodyCentre) + GetFront() * (BodyHalfDepth + Distance);
+}
+
 FVector AL2H_HidingCloset::GetFront() const
 {
 	return GetActorTransform().TransformVectorNoScale(FrontLocal).GetSafeNormal2D();

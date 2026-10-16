@@ -16,6 +16,11 @@
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
 #include "World/L2H_HidingCloset.h"
+#include "Character/L2H_FlashlightComponent.h"
+#include "Components/PointLightComponent.h"
+#include "EngineUtils.h"
+#include "NavigationSystem.h"
+#include "Navigation/PathFollowingComponent.h"
 
 AL2H_EnemyRobot::AL2H_EnemyRobot()
 {
@@ -52,6 +57,16 @@ AL2H_EnemyRobot::AL2H_EnemyRobot()
 	Move->RotationRate = FRotator(0.0f, 420.0f, 0.0f);
 	Move->MaxWalkSpeed = 380.0f;
 	bUseControllerRotationYaw = false;
+
+	// The eye: a small light on the head whose colour says what it is doing.
+	EyeLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("EyeLight"));
+	EyeLight->SetupAttachment(GetMesh(), TEXT("head"));
+	EyeLight->SetRelativeLocation(FVector(0.0f, 14.0f, 6.0f));
+	EyeLight->SetIntensityUnits(ELightUnits::Candelas);
+	EyeLight->SetIntensity(20.0f);
+	EyeLight->SetAttenuationRadius(140.0f);
+	EyeLight->SetCastShadows(false);
+	EyeLight->SetLightColor(FLinearColor(0.25f, 0.6f, 1.0f));
 }
 
 void AL2H_EnemyRobot::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -61,6 +76,8 @@ void AL2H_EnemyRobot::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 	DOREPLIFETIME(AL2H_EnemyRobot, Health);
 	DOREPLIFETIME(AL2H_EnemyRobot, bDead);
 	DOREPLIFETIME(AL2H_EnemyRobot, bStunned);
+	DOREPLIFETIME(AL2H_EnemyRobot, State);
+	DOREPLIFETIME(AL2H_EnemyRobot, Awareness);
 }
 
 void AL2H_EnemyRobot::BeginPlay()
@@ -71,19 +88,26 @@ void AL2H_EnemyRobot::BeginPlay()
 	{
 		Health = MaxHealth;
 	}
+	HomeLocation = GetActorLocation();
+	HomeRotation = FRotator(0.0f, GetActorRotation().Yaw, 0.0f);
+	OnRep_State();
 }
 
-AL2H_BaseCharacter* AL2H_EnemyRobot::FindTarget() const
+AL2H_BaseCharacter* AL2H_EnemyRobot::FindVisiblePlayer(float& OutDistance) const
 {
 	const AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this);
-	if (!Director)
+	UWorld* World = GetWorld();
+	OutDistance = TNumericLimits<float>::Max();
+	if (!Director || !World)
 	{
 		return nullptr;
 	}
 
-	AL2H_BaseCharacter* Best = nullptr;
-	float BestDistanceSq = FMath::Square(SightRange);
+	const FVector Eye = GetActorLocation() + FVector(0.0f, 0.0f, 60.0f);
+	const FVector Forward = GetActorForwardVector().GetSafeNormal2D();
+	const float ViewCos = FMath::Cos(FMath::DegreesToRadians(SightHalfAngle));
 
+	AL2H_BaseCharacter* Best = nullptr;
 	for (AL2H_BaseCharacter* Candidate : Director->GetRegisteredPawns())
 	{
 		// A body on the floor or on someone's shoulders is left alone: the robot goes for whoever can
@@ -94,14 +118,39 @@ AL2H_BaseCharacter* AL2H_EnemyRobot::FindTarget() const
 			continue;
 		}
 
-		const float DistanceSq = FVector::DistSquared(Candidate->GetActorLocation(), GetActorLocation());
-		if (DistanceSq < BestDistanceSq)
+		const UL2H_FlashlightComponent* Lamp = Candidate->FindComponentByClass<UL2H_FlashlightComponent>();
+		const bool bLit = Lamp && Lamp->IsOn();
+		float Range = SightRange * (Candidate->bIsCrouched ? CrouchSightScale : 1.0f);
+		if (bLit)
 		{
-			BestDistanceSq = DistanceSq;
-			Best = Candidate;
+			Range = SightRange * FlashlightSightScale;
 		}
-	}
 
+		const FVector To = Candidate->GetActorLocation() - GetActorLocation();
+		const float Distance = To.Size();
+		if (Distance > Range || Distance >= OutDistance)
+		{
+			continue;
+		}
+
+		// In the cone, or close enough to be felt, or carrying a light it can see from any side.
+		const bool bInView = FVector::DotProduct(Forward, To.GetSafeNormal2D()) >= ViewCos;
+		if (!bInView && !bLit && Distance > CloseSenseRange)
+		{
+			continue;
+		}
+
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HEnemySight), false, this);
+		Params.AddIgnoredActor(Candidate);
+		if (World->LineTraceTestByChannel(Eye, Candidate->GetActorLocation() + FVector(0.0f, 0.0f, 50.0f), ECC_Visibility, Params)
+			&& Distance > CloseSenseRange)
+		{
+			continue;
+		}
+
+		Best = Candidate;
+		OutDistance = Distance;
+	}
 	return Best;
 }
 
@@ -124,6 +173,7 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 			bStunned = false;
 		}
 		bWindingUp = false;
+		StopMoving();
 		return;
 	}
 
@@ -138,28 +188,330 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 		return;
 	}
 
-	AL2H_BaseCharacter* Target = FindTarget();
-	if (!Target)
+	UpdateSenses(DeltaSeconds);
+
+	switch (State)
 	{
+	case EL2H_RobotState::Patrol:
+	case EL2H_RobotState::Return:
+		TickPatrol(DeltaSeconds);
+		break;
+	case EL2H_RobotState::Suspicious:
+		TickSuspicious(DeltaSeconds);
+		break;
+	case EL2H_RobotState::Investigate:
+		TickInvestigate(DeltaSeconds);
+		break;
+	case EL2H_RobotState::Chase:
+		TickChase(DeltaSeconds);
+		break;
+	case EL2H_RobotState::Search:
+		TickSearch(DeltaSeconds);
+		break;
+	}
+}
+
+void AL2H_EnemyRobot::UpdateSenses(float DeltaSeconds)
+{
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+	float Distance = 0.0f;
+	AL2H_BaseCharacter* Seen = FindVisiblePlayer(Distance);
+
+	if (State == EL2H_RobotState::Chase)
+	{
+		// Hunting: it follows the one it hunts while it can see them, and switches only to someone it sees
+		// when it has lost them.
+		AL2H_BaseCharacter* Hunted = HuntTarget.Get();
+		if (Seen && (Seen == Hunted || !Hunted || Now - LastSeenTime > LoseSightSeconds))
+		{
+			HuntTarget = Seen;
+			LastKnownLocation = Seen->GetActorLocation();
+			LastSeenTime = Now;
+		}
+		Awareness = 1.0f;
 		return;
 	}
 
-	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
-	const float Distance = ToTarget.Size2D();
+	if (Seen)
+	{
+		// The closer, the quicker it is sure: right in front of it almost at once, at the far end of its
+		// sight several times NoticeSeconds.
+		const float Range = FMath::Max(SightRange, 1.0f);
+		const float Seconds = FMath::Lerp(0.15f, NoticeSeconds * 2.0f, FMath::Clamp(Distance / Range, 0.0f, 1.0f));
+		Awareness = FMath::Min(1.0f, Awareness + DeltaSeconds / FMath::Max(Seconds, 0.05f));
+		HuntTarget = Seen;
+		LastKnownLocation = Seen->GetActorLocation();
+		LastSeenTime = Now;
 
+		if (Awareness >= 1.0f)
+		{
+			StartHunt(Seen);
+		}
+		else if (State != EL2H_RobotState::Suspicious)
+		{
+			SetState(EL2H_RobotState::Suspicious);
+		}
+		return;
+	}
+
+	Awareness = FMath::Max(0.0f, Awareness - AwarenessDecay * DeltaSeconds);
+
+	// Footsteps: a player running close by is heard, wherever they are.
+	if (const AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this))
+	{
+		for (AL2H_BaseCharacter* Candidate : Director->GetRegisteredPawns())
+		{
+			if (Candidate && !Candidate->IsDowned() && !Candidate->IsDead() && !Candidate->bIsCrouched
+				&& Candidate->GetVelocity().Size2D() > RunNoiseSpeed && Candidate->GetCharacterMovement()->IsMovingOnGround()
+				&& FVector::Dist(Candidate->GetActorLocation(), GetActorLocation()) < RunHearingRange)
+			{
+				Investigate(Candidate->GetActorLocation());
+				break;
+			}
+		}
+	}
+}
+
+void AL2H_EnemyRobot::SetState(EL2H_RobotState NewState)
+{
+	if (State == NewState)
+	{
+		return;
+	}
+	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s %s -> %s (awareness %.2f)"), *GetNameSafe(this),
+		*UEnum::GetValueAsString(State), *UEnum::GetValueAsString(NewState), Awareness));
+	State = NewState;
+	StateStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	MoveGoal = FVector(TNumericLimits<float>::Max());
+	if (NewState == EL2H_RobotState::Search)
+	{
+		SearchTurnTime = StateStartTime;
+		SearchYaw = GetActorRotation().Yaw;
+	}
+	OnRep_State();
+}
+
+void AL2H_EnemyRobot::StartHunt(AL2H_BaseCharacter* Who)
+{
+	if (!Who)
+	{
+		return;
+	}
+	const bool bWasHunting = State == EL2H_RobotState::Chase;
+	HuntTarget = Who;
+	Awareness = 1.0f;
+	LastKnownLocation = Who->GetActorLocation();
+	LastSeenTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	SetState(EL2H_RobotState::Chase);
+
+	if (!bWasHunting && AlertRadius > 0.0f && GetWorld())
+	{
+		for (TActorIterator<AL2H_EnemyRobot> It(GetWorld()); It; ++It)
+		{
+			if (*It != this && !It->IsDead() && FVector::Dist(It->GetActorLocation(), GetActorLocation()) <= AlertRadius)
+			{
+				It->HearAlert(LastKnownLocation);
+			}
+		}
+	}
+}
+
+void AL2H_EnemyRobot::HearAlert(const FVector& Location)
+{
+	Investigate(Location);
+	// Told by another robot: halfway to sure, so a glimpse finishes the job.
+	Awareness = FMath::Max(Awareness, 0.5f);
+}
+
+void AL2H_EnemyRobot::Investigate(const FVector& Location)
+{
+	if (bDead || State == EL2H_RobotState::Chase)
+	{
+		return;
+	}
+	LastKnownLocation = Location;
+	if (State == EL2H_RobotState::Investigate)
+	{
+		MoveGoal = FVector(TNumericLimits<float>::Max());
+		return;
+	}
+	SetState(EL2H_RobotState::Investigate);
+}
+
+void AL2H_EnemyRobot::ReportNoise(const UObject* WorldContext, const FVector& Location, float Radius)
+{
+	UWorld* World = WorldContext ? WorldContext->GetWorld() : nullptr;
+	if (!World || World->GetNetMode() == NM_Client || Radius <= 0.0f)
+	{
+		return;
+	}
+	for (TActorIterator<AL2H_EnemyRobot> It(World); It; ++It)
+	{
+		if (!It->IsDead() && FVector::Dist(It->GetActorLocation(), Location) <= Radius)
+		{
+			It->Investigate(Location);
+		}
+	}
+}
+
+void AL2H_EnemyRobot::TickPatrol(float DeltaSeconds)
+{
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+	if (PatrolPoints.Num() == 0)
+	{
+		// A guard: back to its post, then facing the way it was placed.
+		if (MoveToward(HomeLocation, PatrolSpeed, 60.0f))
+		{
+			if (State == EL2H_RobotState::Return)
+			{
+				SetState(EL2H_RobotState::Patrol);
+			}
+			FaceToward(GetActorLocation() + HomeRotation.Vector() * 100.0f, DeltaSeconds);
+		}
+		return;
+	}
+
+	if (Now < PatrolWaitUntil)
+	{
+		return;
+	}
+	PatrolIndex = PatrolIndex % PatrolPoints.Num();
+	const FVector Point = HomeLocation + HomeRotation.RotateVector(PatrolPoints[PatrolIndex]);
+	if (MoveToward(Point, PatrolSpeed, 70.0f))
+	{
+		if (State == EL2H_RobotState::Return)
+		{
+			SetState(EL2H_RobotState::Patrol);
+		}
+		PatrolIndex = (PatrolIndex + 1) % PatrolPoints.Num();
+		PatrolWaitUntil = Now + PatrolWait;
+	}
+}
+
+void AL2H_EnemyRobot::TickSuspicious(float DeltaSeconds)
+{
+	// Stops and stares at what it glimpsed while its awareness fills or drains.
+	StopMoving();
+	FaceToward(LastKnownLocation, DeltaSeconds);
+
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	if (Now - LastSeenTime > 0.6f)
+	{
+		// Gone from view: a good look is worth walking over for, a flicker is forgotten.
+		if (Awareness >= 0.35f)
+		{
+			SetState(EL2H_RobotState::Investigate);
+		}
+		else if (Awareness <= 0.0f)
+		{
+			SetState(EL2H_RobotState::Return);
+		}
+	}
+}
+
+void AL2H_EnemyRobot::TickInvestigate(float DeltaSeconds)
+{
+	if (MoveToward(LastKnownLocation, InvestigateSpeed, 150.0f))
+	{
+		SetState(EL2H_RobotState::Search);
+	}
+	// A walk that cannot get there (a wall, no way round) ends in a look around where it stands.
+	else if (GetWorld() && GetWorld()->GetTimeSeconds() - StateStartTime > 15.0f)
+	{
+		SetState(EL2H_RobotState::Search);
+	}
+}
+
+void AL2H_EnemyRobot::TickSearch(float DeltaSeconds)
+{
+	StopMoving();
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+
+	// Looks one way, then the other, then behind.
+	if (Now >= SearchTurnTime)
+	{
+		static const float Turns[] = { 70.0f, -140.0f, 180.0f, -110.0f };
+		const int32 Step = FMath::FloorToInt((Now - StateStartTime) / 1.4f);
+		SearchYaw = GetActorRotation().Yaw + Turns[Step % UE_ARRAY_COUNT(Turns)];
+		SearchTurnTime = Now + 1.4f;
+	}
+	FaceToward(GetActorLocation() + FRotator(0.0f, SearchYaw, 0.0f).Vector() * 100.0f, DeltaSeconds);
+
+	if (Now - StateStartTime > SearchSeconds)
+	{
+		Awareness = 0.0f;
+		SetState(EL2H_RobotState::Return);
+	}
+}
+
+void AL2H_EnemyRobot::TickChase(float DeltaSeconds)
+{
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	AL2H_BaseCharacter* Hunted = HuntTarget.Get();
+
+	if (!Hunted || Hunted->IsDowned() || Hunted->IsDead() || Hunted->IsBeingCarried())
+	{
+		HuntTarget.Reset();
+		SetState(EL2H_RobotState::Search);
+		return;
+	}
+
+	// It watched them step into a closet: it goes to the doors and pulls them out.
+	if (AL2H_HidingCloset::IsHiding(Hunted))
+	{
+		AL2H_HidingCloset* Closet = AL2H_HidingCloset::FindClosetOf(Hunted);
+		if (Closet && Now - LastSeenTime <= LoseSightSeconds + 1.0f)
+		{
+			ClosetToOpen = Closet;
+		}
+	}
+	if (AL2H_HidingCloset* Closet = ClosetToOpen.Get())
+	{
+		if (!AL2H_HidingCloset::IsHiding(Hunted))
+		{
+			ClosetToOpen.Reset();
+		}
+		else
+		{
+			LastSeenTime = Now;
+			const FVector Front = Closet->GetFrontPoint(70.0f);
+			if (MoveToward(Front, ChaseSpeed, 100.0f))
+			{
+				FaceToward(Closet->GetActorLocation(), DeltaSeconds);
+				Closet->ForceOpen();
+				ClosetToOpen.Reset();
+			}
+			return;
+		}
+	}
+
+	if (Now - LastSeenTime > LoseSightSeconds)
+	{
+		// Lost them: to where they were last seen, then a look around.
+		Awareness = 0.75f;
+		SetState(EL2H_RobotState::Investigate);
+		return;
+	}
+
+	const FVector ToTarget = Hunted->GetActorLocation() - GetActorLocation();
+	const float Distance = ToTarget.Size2D();
 	if (Distance > AttackRange * 0.85f)
 	{
-		// Straight at the player. Without a navmesh this walks into walls, which is fine for a test dummy
-		// in open test levels and keeps the robot honest about where it is going.
-		AddMovementInput(ToTarget.GetSafeNormal2D(), 1.0f);
+		MoveToward(Hunted->GetActorLocation(), ChaseSpeed, AttackRange * 0.7f);
 		return;
 	}
 
 	// In reach: face the player and swing on the cooldown.
+	StopMoving();
 	SetActorRotation(FRotator(0.0f, ToTarget.Rotation().Yaw, 0.0f));
 
-	const UWorld* World = GetWorld();
-	const float Now = World ? World->GetTimeSeconds() : 0.0f;
 	if (Now < NextAttackTime || Distance > AttackRange || FMath::Abs(ToTarget.Z) > AttackHeightReach)
 	{
 		return;
@@ -171,38 +523,159 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 	NextAttackTime = Now + AttackWindup + AttackInterval;
 	bWindingUp = true;
 	StrikeTime = Now + AttackWindup;
-	WindupTarget = Target;
+	WindupTarget = Hunted;
 	GetCharacterMovement()->StopMovementImmediately();
 	MulticastWindup(AttackWindup);
+}
+
+bool AL2H_EnemyRobot::MoveToward(const FVector& Goal, float Speed, float AcceptRadius)
+{
+	GetCharacterMovement()->MaxWalkSpeed = Speed;
+	if (FVector::DistSquared2D(Goal, GetActorLocation()) <= FMath::Square(AcceptRadius))
+	{
+		StopMoving();
+		return true;
+	}
+
+	// Blocked short of the goal (a crate in the way, a ledge it cannot take): when it has not gained ground
+	// for two seconds it counts as there, so the next step of its routine still happens.
+	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	const float GoalDistance = FVector::Dist2D(Goal, GetActorLocation());
+	if (FVector::DistSquared(Goal, ProgressGoal) > FMath::Square(80.0f) || GoalDistance < BestGoalDistance - 25.0f)
+	{
+		ProgressGoal = Goal;
+		BestGoalDistance = GoalDistance;
+		LastProgressTime = Now;
+	}
+	else if (Now - LastProgressTime > 2.0f)
+	{
+		BestGoalDistance = TNumericLimits<float>::Max();
+		LastProgressTime = Now;
+		StopMoving();
+		return true;
+	}
+
+	// The navmesh when the level has one: re-asked only when the goal has moved, so the path is followed.
+	AAIController* AI = Cast<AAIController>(GetController());
+	if (AI && !bNoNavMesh)
+	{
+		if (AI->GetMoveStatus() == EPathFollowingStatus::Moving && FVector::DistSquared(Goal, MoveGoal) <= FMath::Square(80.0f))
+		{
+			return false;
+		}
+		MoveGoal = Goal;
+		const EPathFollowingRequestResult::Type Result = AI->MoveToLocation(Goal, AcceptRadius * 0.8f, /*bStopOnOverlap=*/true,
+			/*bUsePathfinding=*/true, /*bProjectDestinationToNavigation=*/true, /*bCanStrafe=*/false, nullptr, /*bAllowPartialPath=*/true);
+		if (Result != EPathFollowingRequestResult::Failed)
+		{
+			return Result == EPathFollowingRequestResult::AlreadyAtGoal;
+		}
+		// No navmesh in this level: steer by hand from now on. (With one, a goal off the mesh is steered to directly.)
+		UNavigationSystemV1* Nav = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+		bNoNavMesh = !Nav || !Nav->GetDefaultNavDataInstance(FNavigationSystem::DontCreate);
+	}
+
+	AddMovementInput(SteerAround((Goal - GetActorLocation()).GetSafeNormal2D()), 1.0f);
+	return false;
+}
+
+void AL2H_EnemyRobot::StopMoving()
+{
+	MoveGoal = FVector(TNumericLimits<float>::Max());
+	if (AAIController* AI = Cast<AAIController>(GetController()); AI && AI->GetMoveStatus() != EPathFollowingStatus::Idle)
+	{
+		AI->StopMovement();
+	}
+}
+
+FVector AL2H_EnemyRobot::SteerAround(const FVector& Direction) const
+{
+	// Whiskers at knee height: straight on if clear, otherwise the nearest clear angle either side.
+	UWorld* World = GetWorld();
+	if (!World || Direction.IsNearlyZero())
+	{
+		return Direction;
+	}
+	const FVector Start = GetActorLocation() - FVector(0.0f, 0.0f, 40.0f);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HEnemySteer), false, this);
+	FCollisionObjectQueryParams Objects;
+	Objects.AddObjectTypesToQuery(ECC_WorldStatic);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	static const float Angles[] = { 0.0f, 30.0f, -30.0f, 60.0f, -60.0f, 90.0f, -90.0f, 125.0f, -125.0f };
+	for (const float Angle : Angles)
+	{
+		const FVector Dir = Direction.RotateAngleAxis(Angle, FVector::UpVector);
+		if (!World->SweepTestByObjectType(Start, Start + Dir * 140.0f, FQuat::Identity, Objects, FCollisionShape::MakeSphere(30.0f), Params))
+		{
+			return Dir;
+		}
+	}
+	return Direction;
+}
+
+void AL2H_EnemyRobot::FaceToward(const FVector& Location, float DeltaSeconds)
+{
+	const FVector To = (Location - GetActorLocation()).GetSafeNormal2D();
+	if (To.IsNearlyZero())
+	{
+		return;
+	}
+	const FRotator Current = GetActorRotation();
+	const FRotator Wanted(0.0f, To.Rotation().Yaw, 0.0f);
+	SetActorRotation(FMath::RInterpConstantTo(Current, Wanted, DeltaSeconds, GetCharacterMovement()->RotationRate.Yaw));
+}
+
+void AL2H_EnemyRobot::OnRep_State()
+{
+	if (!EyeLight)
+	{
+		return;
+	}
+	FLinearColor Colour(0.25f, 0.6f, 1.0f);
+	switch (State)
+	{
+	case EL2H_RobotState::Suspicious:
+	case EL2H_RobotState::Investigate:
+	case EL2H_RobotState::Search:
+		Colour = FLinearColor(1.0f, 0.75f, 0.1f);
+		break;
+	case EL2H_RobotState::Chase:
+		Colour = FLinearColor(1.0f, 0.08f, 0.05f);
+		break;
+	default:
+		break;
+	}
+	EyeLight->SetLightColor(Colour);
+	EyeLight->SetIntensity(State == EL2H_RobotState::Chase ? 40.0f : 20.0f);
 }
 
 void AL2H_EnemyRobot::Strike()
 {
 	bWindingUp = false;
-	AL2H_BaseCharacter* Target = WindupTarget.Get();
+	AL2H_BaseCharacter* Victim = WindupTarget.Get();
 	WindupTarget.Reset();
 	UWorld* World = GetWorld();
-	if (!Target || !World || Target->IsDowned() || Target->IsDead() || AL2H_HidingCloset::IsHiding(Target))
+	if (!Victim || !World || Victim->IsDowned() || Victim->IsDead() || AL2H_HidingCloset::IsHiding(Victim))
 	{
 		return;
 	}
 
-	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
+	const FVector ToTarget = Victim->GetActorLocation() - GetActorLocation();
 	const float Facing = FVector::DotProduct(GetActorForwardVector().GetSafeNormal2D(), ToTarget.GetSafeNormal2D());
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HEnemyStrike), false, this);
-	Params.AddIgnoredActor(Target);
+	Params.AddIgnoredActor(Victim);
 	const FVector Eye = GetActorLocation() + FVector(0.0f, 0.0f, 50.0f);
-	const bool bBlocked = World->LineTraceTestByChannel(Eye, Target->GetActorLocation(), ECC_Visibility, Params);
+	const bool bBlocked = World->LineTraceTestByChannel(Eye, Victim->GetActorLocation(), ECC_Visibility, Params);
 
 	const bool bInReach = ToTarget.Size2D() <= AttackRange && FMath::Abs(ToTarget.Z) <= AttackHeightReach;
 	const bool bLands = bInReach && Facing >= AttackConeCos && !bBlocked;
 
-	MulticastAttack(Target);
+	MulticastAttack(Victim);
 
 	if (!bLands)
 	{
 		L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s missed %s (dist %.0f, dz %.0f, facing %.2f, blocked %d)"),
-			*GetNameSafe(this), *GetNameSafe(Target), ToTarget.Size2D(), ToTarget.Z, Facing, bBlocked ? 1 : 0));
+			*GetNameSafe(this), *GetNameSafe(Victim), ToTarget.Size2D(), ToTarget.Z, Facing, bBlocked ? 1 : 0));
 		return;
 	}
 
@@ -210,9 +683,9 @@ void AL2H_EnemyRobot::Strike()
 	// apply without the robot knowing about any of them.
 	if (AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this))
 	{
-		Director->ApplyTimeDamage(Target, AttackDamage);
+		Director->ApplyTimeDamage(Victim, AttackDamage);
 	}
-	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s hit %s for %.0f"), *GetNameSafe(this), *GetNameSafe(Target), AttackDamage));
+	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s hit %s for %.0f"), *GetNameSafe(this), *GetNameSafe(Victim), AttackDamage));
 }
 
 void AL2H_EnemyRobot::MulticastWindup_Implementation(float Seconds)
@@ -249,6 +722,11 @@ float AL2H_EnemyRobot::TakeDamage(float DamageAmount, const FDamageEvent& Damage
 	{
 		Die();
 	}
+	else if (AL2H_BaseCharacter* Shooter = EventInstigator ? Cast<AL2H_BaseCharacter>(EventInstigator->GetPawn()) : nullptr)
+	{
+		// Hit: it knows at once who did it and where they stand.
+		StartHunt(Shooter);
+	}
 
 	return DamageAmount;
 }
@@ -262,6 +740,7 @@ void AL2H_EnemyRobot::Die()
 
 	bDead = true;
 	ApplyDeathPhysics();
+	StopMoving();
 
 	// Part of what the fight cost comes back: the shards wait by the wreck for whoever walks over.
 	AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this);
@@ -341,6 +820,10 @@ void AL2H_EnemyRobot::OnRep_Dead()
 
 void AL2H_EnemyRobot::ApplyDeathPhysics()
 {
+	if (EyeLight)
+	{
+		EyeLight->SetVisibility(false);
+	}
 	GetCharacterMovement()->StopMovementImmediately();
 	GetCharacterMovement()->DisableMovement();
 

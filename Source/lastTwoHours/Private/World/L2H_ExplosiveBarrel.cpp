@@ -55,6 +55,7 @@ void AL2H_ExplosiveBarrel::Break(AActor* Breaker)
 	}
 	const FVector Centre = Mesh->Bounds.Origin;
 	MulticastExplosionFX();
+	AL2H_EnemyRobot::ReportNoise(this, Centre, ExplosionRadius * 6.0f);
 
 	auto Falloff = [this, Centre](const FVector& Where)
 	{

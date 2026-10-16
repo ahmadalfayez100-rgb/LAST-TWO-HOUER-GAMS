@@ -202,7 +202,13 @@ void AL2H_TestCourse::SpawnReplicated()
 	// A time shard to collect, and a robot further on: the combat music when near, shards when it dies.
 	UClass* ShardClass = LoadClass<AL2H_TimeShard>(nullptr, TEXT("/Game/L2HTime/Blueprints/BP_L2H_TimeShard.BP_L2H_TimeShard_C"));
 	World->SpawnActor<AL2H_TimeShard>(ShardClass ? ShardClass : AL2H_TimeShard::StaticClass(), Origin + FVector(-200.0f, -350.0f, 80.0f), FRotator::ZeroRotator, Params);
-	World->SpawnActor<AL2H_EnemyRobot>(AL2H_EnemyRobot::StaticClass(), Origin + FVector(1300.0f, -300.0f, 100.0f), FRotator(0.0f, 180.0f, 0.0f), Params);
+	// The robot walks a beat along the far side, so sneaking past it (crouched, lamp off) can be tried.
+	if (AL2H_EnemyRobot* Robot = World->SpawnActorDeferred<AL2H_EnemyRobot>(AL2H_EnemyRobot::StaticClass(),
+		FTransform(FRotator(0.0f, 180.0f, 0.0f), Origin + FVector(1300.0f, -300.0f, 100.0f)), nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AlwaysSpawn))
+	{
+		Robot->SetPatrolPoints({ FVector::ZeroVector, FVector(0.0f, -900.0f, 0.0f), FVector(300.0f, -700.0f, 0.0f) });
+		Robot->FinishSpawning(FTransform(FRotator(0.0f, 180.0f, 0.0f), Origin + FVector(1300.0f, -300.0f, 100.0f)));
+	}
 
 	// A closet to hide from the robot in, facing the open floor.
 	World->SpawnActor<AL2H_HidingCloset>(AL2H_HidingCloset::StaticClass(), Origin + FVector(700.0f, 750.0f, 0.0f), FRotator::ZeroRotator, Params);
