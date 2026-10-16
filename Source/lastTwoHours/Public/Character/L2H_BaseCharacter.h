@@ -1118,18 +1118,43 @@ protected:
 	void ApplyCarriedPose(bool bCarried);
 
 public:
-	/** Server: plays an interaction clip (pick up, push a door) on every machine, through DefaultSlot. */
-	void PlayInteractAnim(UAnimSequenceBase* Anim);
+	/**
+	 * Server: plays an interaction clip (pick up, push a door, a swing) on every machine, through DefaultSlot.
+	 * A non-zero FaceLocation turns the body toward it first. StopAt > 0 cuts the clip there (a clip with a long
+	 * tail). Movement input is ignored for LockSeconds (< 0: until the clip ends), so the body does not slide
+	 * across the floor while the clip plays.
+	 */
+	void PlayInteractAnim(UAnimSequenceBase* Anim, FVector FaceLocation = FVector::ZeroVector, float StopAt = 0.0f, float LockSeconds = -1.0f);
 
 	UFUNCTION(NetMulticast, Unreliable)
-	void MulticastInteractAnim(UAnimSequenceBase* Anim);
+	void MulticastInteractAnim(UAnimSequenceBase* Anim, float FaceYaw, bool bFace, float StopAt, float LockSeconds);
 
-	/** The pick-up clip for an item lying HeightAboveFeet cm above this player's feet. */
-	UAnimSequenceBase* GetPickupAnim(float HeightAboveFeet) const;
+	/** The pick-up clip for an item lying HeightAboveFeet cm above the feet, when the hand reaches it, and where the clip is cut. */
+	UAnimSequenceBase* GetPickupAnim(float HeightAboveFeet, float& OutContactTime, float& OutStopAt) const;
 
-	/** Pick-up clips (MSHF, retargeted to UEFN): a standing reach-and-take, one picked at random. */
+	/** Pick-ups (delivery pack, UEFN): one hand to the floor, or to table height (PickupTableHeight and up). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
-	TArray<TObjectPtr<UAnimSequenceBase>> PickupAnims;
+	TObjectPtr<UAnimSequenceBase> PickupFloorAnim;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
+	TObjectPtr<UAnimSequenceBase> PickupTableAnim;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float PickupTableHeight = 50.0f;
+
+	/** Seconds into each clip at which the hand reaches the item (it disappears then), and where the floor clip is cut (it goes on to put the box back down). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float PickupFloorContact = 1.1f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float PickupFloorStopAt = 2.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float PickupTableContact = 0.6f;
+
+	/** Seconds into the door push at which the hand meets the door, and the door starts to swing. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float DoorPushContactTime = 0.4f;
 
 	/** Door push clips by the side the door is on (ResidentHorrorV2). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
@@ -1155,6 +1180,10 @@ public:
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastStopInteractAnim(float BlendOut);
+
+	/** Local time until which movement input is ignored (an interaction clip is playing). */
+	float ActionLockUntil = -1.0f;
+	FTimerHandle InteractStopTimer;
 
 	/** A stunned enemy within reach and in front, or null. */
 	class AL2H_EnemyRobot* FindFinisherTarget() const;

@@ -80,6 +80,9 @@ protected:
 	UFUNCTION()
 	void OnRep_Taken();
 
+	/** Server: taken, waiting for the hand to reach it before it leaves the world. */
+	bool bTakePending = false;
+
 	/** Server: shows or hides the pickup and its interact collision. */
 	void SetTaken(bool bNewTaken);
 

@@ -10,6 +10,7 @@
 #include "Item/L2H_InventoryComponent.h"
 #include "Item/L2H_ItemDataAsset.h"
 #include "Net/UnrealNetwork.h"
+#include "TimerManager.h"
 #include "Time/L2HTimeLog.h"
 
 #include "Interaction/L2H_WorldStateId.h"
@@ -59,7 +60,7 @@ void AL2H_ItemPickup::L2H_GetWorldStateId_Implementation(FGuid& OutId)
 
 void AL2H_ItemPickup::L2H_GetInteractPrompt_Implementation(bool& bCanInteract, FText& OutVerb, FText& OutTargetName)
 {
-	bCanInteract = Instance.IsSet() && !bTaken;
+	bCanInteract = Instance.IsSet() && !bTaken && !bTakePending;
 	OutVerb = NSLOCTEXT("L2H|Item", "PickUp", "Pick up");
 
 	OutTargetName = Instance.IsSet()
@@ -69,7 +70,7 @@ void AL2H_ItemPickup::L2H_GetInteractPrompt_Implementation(bool& bCanInteract, F
 
 void AL2H_ItemPickup::L2H_Interact_Implementation(AActor* Interactor)
 {
-	if (!HasAuthority() || !Instance.IsSet() || !Interactor || bTaken)
+	if (!HasAuthority() || !Instance.IsSet() || !Interactor || bTaken || bTakePending)
 	{
 		return;
 	}
@@ -95,6 +96,7 @@ void AL2H_ItemPickup::L2H_Interact_Implementation(AActor* Interactor)
 		return;
 	}
 
+	float ContactDelay = 0.0f;
 	if (Inventory->ServerAddItemInstance(Instance))
 	{
 		L2HTime::LogImportant(FString::Printf(
@@ -114,18 +116,39 @@ void AL2H_ItemPickup::L2H_Interact_Implementation(AActor* Interactor)
 				}
 			}
 			const float FeetZ = Taker->GetActorLocation().Z - Taker->GetSimpleCollisionHalfHeight();
-			Taker->PlayInteractAnim(Taker->GetPickupAnim(GetActorLocation().Z - FeetZ));
+			float StopAt = 0.0f;
+			UAnimSequenceBase* Clip = Taker->GetPickupAnim(GetActorLocation().Z - FeetZ, ContactDelay, StopAt);
+			Taker->PlayInteractAnim(Clip, GetActorLocation(), StopAt);
+			if (!Clip)
+			{
+				ContactDelay = 0.0f;
+			}
 		}
 
-		// A placed pickup is only hidden: a rewind to an earlier checkpoint puts it back where it was. One
-		// dropped at runtime has no place in any checkpoint's world, so it simply goes.
-		if (IsNetStartupActor())
+		// Gone from the world when the hand reaches it, not on the press. A placed pickup is only hidden (a
+		// rewind to an earlier checkpoint puts it back where it was); one dropped at runtime has no place in
+		// any checkpoint's world, so it simply goes.
+		bTakePending = true;
+		auto Remove = [this]()
 		{
-			SetTaken(true);
+			bTakePending = false;
+			if (IsNetStartupActor())
+			{
+				SetTaken(true);
+			}
+			else
+			{
+				Destroy();
+			}
+		};
+		if (ContactDelay > 0.0f)
+		{
+			FTimerHandle Handle;
+			GetWorldTimerManager().SetTimer(Handle, FTimerDelegate::CreateWeakLambda(this, Remove), ContactDelay, false);
 		}
 		else
 		{
-			Destroy();
+			Remove();
 		}
 	}
 }

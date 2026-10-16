@@ -52,7 +52,8 @@ void UL2H_Ability_Melee::ActivateAbility(
 	BusyUntil = Now + Length * CommitFraction;
 	LastSwingEnd = Now + Length;
 
-	Character->PlayInteractAnim(Swing);
+	// Planted for the committed part of the swing; the follow-through can be walked out of.
+	Character->PlayInteractAnim(Swing, FVector::ZeroVector, 0.0f, Length * CommitFraction);
 
 	// The blow lands partway through the clip. The swinger is held weakly: a pawn gone by then hits nothing.
 	FTimerHandle HitTimer;

@@ -148,18 +148,36 @@ void AL2H_DoorActor::L2H_Interact_Implementation(AActor* Interactor)
 		return;
 	}
 
-	bOpen = !bOpen;
-
-	// Opening is a push with the hand on the side the door is on; closing needs no clip.
-	if (bOpen)
+	if (GetWorldTimerManager().IsTimerActive(PushTimer))
 	{
-		if (AL2H_BaseCharacter* Opener = Cast<AL2H_BaseCharacter>(Interactor))
-		{
-			const FVector ToDoor = GetActorLocation() - Opener->GetActorLocation();
-			const bool bRight = FVector::DotProduct(ToDoor, Opener->GetActorRightVector()) >= 0.0f;
-			Opener->PlayInteractAnim(bRight ? Opener->DoorPushRightAnim.Get() : Opener->DoorPushLeftAnim.Get());
-		}
+		return; // A push is already on its way to the door.
 	}
+
+	// Opening is a push: the opener turns to the door, reaches with the hand on the door's side, and the
+	// door starts to swing when the hand meets it. Closing needs no clip.
+	AL2H_BaseCharacter* Opener = Cast<AL2H_BaseCharacter>(Interactor);
+	UAnimSequenceBase* Push = nullptr;
+	if (!bOpen && Opener)
+	{
+		const FVector DoorCentre = DoorMesh ? DoorMesh->Bounds.Origin : GetActorLocation();
+		const FVector ToDoor = DoorCentre - Opener->GetActorLocation();
+		const bool bRight = FVector::DotProduct(ToDoor, Opener->GetActorRightVector()) >= 0.0f;
+		Push = bRight ? Opener->DoorPushRightAnim.Get() : Opener->DoorPushLeftAnim.Get();
+		Opener->PlayInteractAnim(Push, DoorCentre);
+	}
+	if (Push && Opener)
+	{
+		TWeakObjectPtr<AActor> WeakOpener(Interactor);
+		GetWorldTimerManager().SetTimer(PushTimer, FTimerDelegate::CreateWeakLambda(this, [this, WeakOpener]()
+		{
+			bOpen = true;
+			L2HTime::LogImportant(FString::Printf(TEXT("Door opened: %s by %s"), *GetName(), *GetNameSafe(WeakOpener.Get())));
+			OnDoorStateChanged(bOpen, bLocked);
+		}), FMath::Max(Opener->DoorPushContactTime, 0.01f), false);
+		return;
+	}
+
+	bOpen = !bOpen;
 
 	L2HTime::LogImportant(FString::Printf(
 		TEXT("Door %s: %s by %s"),

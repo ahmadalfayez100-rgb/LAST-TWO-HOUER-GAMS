@@ -96,10 +96,14 @@ protected:
 	 * Radius of the focus sweep.
 	 *
 	 * A sphere rather than a bare line on purpose: a paper on a desk or a drawer handle is rarely
-al	 * exactly on the crosshair, and a line trace makes the player fight the camera to press anything.
+	 * exactly on the crosshair, and a line trace makes the player fight the camera to press anything.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Interaction", meta = (ClampMin = "0.0"))
 	float ProbeRadius = 18.0f;
+
+	/** With nothing under the view, the nearest interactable within this radius of the body (cm), front first. 0 = off. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Interaction", meta = (ClampMin = "0.0"))
+	float ProximityRadius = 160.0f;
 
 	/**
 	 * Channel the focus sweep runs on. Defaults to the L2H Interact channel defined in DefaultEngine.ini.

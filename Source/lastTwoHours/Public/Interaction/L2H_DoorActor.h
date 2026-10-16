@@ -104,4 +104,7 @@ protected:
 private:
 	/** 0 shut, 1 fully open. Local to each machine, driven towards bOpen in Tick. */
 	float OpenAlpha = 0.0f;
+
+	/** Server: a push clip is on its way to the door; the door opens when it fires. */
+	FTimerHandle PushTimer;
 };

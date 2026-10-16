@@ -3,6 +3,8 @@
 #include "Interaction/L2H_InteractionComponent.h"
 
 #include "CollisionQueryParams.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "Interaction/L2H_InteractableInterface.h"
@@ -86,6 +88,38 @@ void UL2H_InteractionComponent::RefreshFocus()
 	// A hit on scenery is not a refusal -- it is just not a candidate. Only an implementer is ever
 	// adopted, so a door frame in front of a paper cannot blank the prompt.
 	AActor* NewFocus = (bHit && ImplementsInteractable(Hit.GetActor())) ? Hit.GetActor() : nullptr;
+
+	// Nothing under the view: the nearest interactable around the body, from any side, the ones in front
+	// first. A third-person camera rarely lines a thin ray up with a small item or a door the player is
+	// pressed against, and the prompt used to appear from one spot only.
+	if (!NewFocus && ProximityRadius > 0.0f)
+	{
+		TArray<FOverlapResult> Overlaps;
+		const FVector Centre = Owner->GetActorLocation();
+		World->OverlapMultiByChannel(Overlaps, Centre, FQuat::Identity, TraceChannel, FCollisionShape::MakeSphere(ProximityRadius), Params);
+
+		const FVector Forward = Owner->GetActorForwardVector().GetSafeNormal2D();
+		float BestScore = TNumericLimits<float>::Max();
+		for (const FOverlapResult& Overlap : Overlaps)
+		{
+			AActor* Candidate = Overlap.GetActor();
+			const UPrimitiveComponent* Component = Overlap.GetComponent();
+			if (!ImplementsInteractable(Candidate) || !Component)
+			{
+				continue;
+			}
+			FVector Closest = Component->Bounds.Origin;
+			Component->GetClosestPointOnCollision(Centre, Closest);
+			const FVector To = Closest - Centre;
+			// Distance, less a bonus for lying ahead: a step behind still counts, but the thing in front wins.
+			const float Score = To.Size2D() - 60.0f * FVector::DotProduct(To.GetSafeNormal2D(), Forward);
+			if (Score < BestScore)
+			{
+				BestScore = Score;
+				NewFocus = Candidate;
+			}
+		}
+	}
 
 	const bool bChanged = (NewFocus != FocusedActor);
 	PreviousFocusedActor = FocusedActor;

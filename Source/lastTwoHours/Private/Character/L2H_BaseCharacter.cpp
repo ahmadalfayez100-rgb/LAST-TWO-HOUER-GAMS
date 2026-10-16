@@ -166,14 +166,10 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 		TEXT("/Game/L2HTime/Input/IMC_L2H_Debug.IMC_L2H_Debug"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 
 	// Interaction clips. Defaults only; the Blueprint may override.
-	for (int32 Index = 1; Index <= 3; ++Index)
-	{
-		const FString Path = FString::Printf(TEXT("/Game/_Project/animation/L2H/Interact/A_L2H_Pickup_%d.A_L2H_Pickup_%d"), Index, Index);
-		if (UAnimSequenceBase* Clip = LoadObject<UAnimSequenceBase>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
-		{
-			PickupAnims.Add(Clip);
-		}
-	}
+	PickupFloorAnim = LoadObject<UAnimSequenceBase>(nullptr,
+		TEXT("/Game/_Project/animation/L2H/Carry/Clips/AnimSeq_Carrying_RightArm_BoxWithHandle_Floor_PickUp_UEFN.AnimSeq_Carrying_RightArm_BoxWithHandle_Floor_PickUp_UEFN"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	PickupTableAnim = LoadObject<UAnimSequenceBase>(nullptr,
+		TEXT("/Game/_Project/animation/L2H/Carry/Clips/AnimSeq_Carrying_RightArm_BoxWithHandle_TableHeight_PickUp_UEFN.AnimSeq_Carrying_RightArm_BoxWithHandle_TableHeight_PickUp_UEFN"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	DoorPushLeftAnim = LoadObject<UAnimSequenceBase>(nullptr,
 		TEXT("/Game/ResidentHorrorV2/Character/Animations/Door/AS_anim_OpenDoor_Push_L.AS_anim_OpenDoor_Push_L"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	DoorPushRightAnim = LoadObject<UAnimSequenceBase>(nullptr,
@@ -1287,6 +1283,10 @@ void AL2H_BaseCharacter::Input_CoverJump(const FInputActionValue& Value)
 
 void AL2H_BaseCharacter::AddMovementInput(FVector WorldDirection, float ScaleValue, bool bForce)
 {
+	if (GetWorld() && GetWorld()->GetTimeSeconds() < ActionLockUntil)
+	{
+		return;
+	}
 	if (CoverComponent && CoverComponent->IsInCover())
 	{
 		// The Blueprint passes the axis' sign in ScaleValue (stick left = right vector x -1); folded in
@@ -1446,9 +1446,8 @@ void AL2H_BaseCharacter::ServerFinisher_Implementation(AL2H_EnemyRobot* Target)
 		return;
 	}
 
-	// Squared up to the enemy, the kick, and the enemy goes down when the foot lands.
-	SetActorRotation(FRotator(0.0f, (Target->GetActorLocation() - GetActorLocation()).Rotation().Yaw, 0.0f));
-	PlayInteractAnim(FinisherAnim);
+	// Squared up to the enemy, the kick (cut where its paired tail begins), and the enemy goes down when the foot lands.
+	PlayInteractAnim(FinisherAnim, Target->GetActorLocation(), FinisherEndTime);
 	TWeakObjectPtr<AL2H_EnemyRobot> WeakTarget(Target);
 	FTimerHandle Impact;
 	World->GetTimerManager().SetTimer(Impact, FTimerDelegate::CreateWeakLambda(this, [this, WeakTarget]()
@@ -1459,46 +1458,72 @@ void AL2H_BaseCharacter::ServerFinisher_Implementation(AL2H_EnemyRobot* Target)
 			PlayCameraShakeOnOwner(HitCameraShake, 0.8f);
 		}
 	}), FMath::Max(FinisherImpactTime, 0.01f), false);
-	FTimerHandle End;
-	World->GetTimerManager().SetTimer(End, FTimerDelegate::CreateWeakLambda(this, [this]()
-	{
-		MulticastStopInteractAnim(0.35f);
-	}), FMath::Max(FinisherEndTime, FinisherImpactTime + 0.1f), false);
 }
 
-void AL2H_BaseCharacter::PlayInteractAnim(UAnimSequenceBase* Anim)
+void AL2H_BaseCharacter::PlayInteractAnim(UAnimSequenceBase* Anim, FVector FaceLocation, float StopAt, float LockSeconds)
 {
-	// Not over a carry, a climb or an aim: those own the body, and a pick-up there would fight them.
-	if (Anim && HasAuthority() && !CarriedActor && !IsBusyTraversing() && !IsDowned() && !IsDead())
+	// Not over a carry, a climb or a fall: those own the body, and a clip there would fight them.
+	if (!Anim || !HasAuthority() || CarriedActor || IsBusyTraversing() || IsDowned() || IsDead())
 	{
-		MulticastInteractAnim(Anim);
+		return;
 	}
+	const bool bFace = !FaceLocation.IsZero();
+	const float FaceYaw = bFace ? (FaceLocation - GetActorLocation()).Rotation().Yaw : 0.0f;
+	MulticastInteractAnim(Anim, FaceYaw, bFace, StopAt, LockSeconds);
 }
 
-void AL2H_BaseCharacter::MulticastInteractAnim_Implementation(UAnimSequenceBase* Anim)
+void AL2H_BaseCharacter::MulticastInteractAnim_Implementation(UAnimSequenceBase* Anim, float FaceYaw, bool bFace, float StopAt, float LockSeconds)
 {
 	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
-	if (Anim && AnimInstance)
+	UWorld* World = GetWorld();
+	if (!Anim || !AnimInstance || !World)
 	{
-		if (UAnimMontage* Montage = Cast<UAnimMontage>(Anim))
+		return;
+	}
+
+	// Turned on every machine, the owner's included: its rotation is its own to send, so a turn made only on
+	// the server would be undone by the owner's next move.
+	if (bFace)
+	{
+		SetActorRotation(FRotator(0.0f, FaceYaw, 0.0f));
+	}
+
+	if (UAnimMontage* Montage = Cast<UAnimMontage>(Anim))
+	{
+		AnimInstance->Montage_Play(Montage);
+	}
+	else
+	{
+		AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, TEXT("DefaultSlot"), 0.2f, 0.25f);
+	}
+
+	// Planted for the clip: the stick is ignored and the walk speed is dropped, or the clip slides across the floor.
+	const float Length = StopAt > 0.0f ? FMath::Min(StopAt, Anim->GetPlayLength()) : Anim->GetPlayLength();
+	ActionLockUntil = World->GetTimeSeconds() + (LockSeconds >= 0.0f ? LockSeconds : Length);
+	if (UCharacterMovementComponent* Move = GetCharacterMovement(); Move && Move->IsMovingOnGround())
+	{
+		Move->StopMovementImmediately();
+	}
+
+	World->GetTimerManager().ClearTimer(InteractStopTimer);
+	if (StopAt > 0.0f && StopAt < Anim->GetPlayLength())
+	{
+		World->GetTimerManager().SetTimer(InteractStopTimer, FTimerDelegate::CreateWeakLambda(this, [this]()
 		{
-			AnimInstance->Montage_Play(Montage);
-		}
-		else
-		{
-			AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, TEXT("DefaultSlot"), 0.2f, 0.25f);
-		}
+			if (UAnimInstance* Instance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+			{
+				Instance->StopSlotAnimation(0.3f, TEXT("DefaultSlot"));
+			}
+		}), StopAt, false);
 	}
 }
 
-UAnimSequenceBase* AL2H_BaseCharacter::GetPickupAnim(float HeightAboveFeet) const
+UAnimSequenceBase* AL2H_BaseCharacter::GetPickupAnim(float HeightAboveFeet, float& OutContactTime, float& OutStopAt) const
 {
-	if (PickupAnims.Num() == 0)
-	{
-		return nullptr;
-	}
-	// The three MSHF clips are all a standing reach-and-take at waist height; one is picked for variety.
-	return PickupAnims[FMath::RandRange(0, PickupAnims.Num() - 1)];
+	const bool bTable = HeightAboveFeet >= PickupTableHeight && PickupTableAnim;
+	OutContactTime = bTable ? PickupTableContact : PickupFloorContact;
+	OutStopAt = bTable ? 0.0f : PickupFloorStopAt;
+	return bTable ? PickupTableAnim.Get() : PickupFloorAnim.Get();
 }
 
 void AL2H_BaseCharacter::MulticastCarryAnim_Implementation(UAnimSequenceBase* Anim, bool bPickup, FVector_NetQuantize RestLocation)
