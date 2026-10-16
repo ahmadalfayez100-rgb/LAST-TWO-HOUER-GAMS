@@ -7,6 +7,7 @@
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "Enemy/L2H_EnemyRobot.h"
+#include "World/L2H_Breakable.h"
 #include "Kismet/GameplayStatics.h"
 #include "Time/L2HTimeLog.h"
 #include "TimerManager.h"
@@ -96,10 +97,26 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 		Enemy->Stun(Stun);
 	}
 
+	// Crates and barrels in reach take the blow too.
+	TArray<FOverlapResult> Props;
+	FCollisionObjectQueryParams PropTypes;
+	PropTypes.AddObjectTypesToQuery(ECC_WorldStatic);
+	PropTypes.AddObjectTypesToQuery(ECC_WorldDynamic);
+	World->OverlapMultiByObjectType(Props, Centre, FQuat::Identity, PropTypes, FCollisionShape::MakeSphere(Radius), Params);
+	for (const FOverlapResult& Overlap : Props)
+	{
+		AL2H_Breakable* Prop = Cast<AL2H_Breakable>(Overlap.GetActor());
+		if (Prop && !Prop->IsBroken() && !Struck.Contains(Prop))
+		{
+			Struck.Add(Prop);
+			UGameplayStatics::ApplyDamage(Prop, Weapon->Data.Damage, Swinger->GetController(), Swinger, nullptr);
+		}
+	}
+
 	if (Struck.Num() > 0)
 	{
 		// The impact is felt on the swinger's camera too, lightly.
 		Swinger->PlayCameraShakeOnOwner(Swinger->HitCameraShake, 0.35f);
-		L2HTime::LogImportant(FString::Printf(TEXT("Melee: %s struck %d enemy(ies) for %.0f"), *GetNameSafe(Swinger), Struck.Num(), Weapon->Data.Damage));
+		L2HTime::LogImportant(FString::Printf(TEXT("Melee: %s struck %d target(s) for %.0f"), *GetNameSafe(Swinger), Struck.Num(), Weapon->Data.Damage));
 	}
 }

@@ -17,6 +17,8 @@
 #include "Time/L2HTimeLog.h"
 #include "Time/L2H_TimeShard.h"
 #include "World/L2H_AreaVolume.h"
+#include "World/L2H_Breakable.h"
+#include "World/L2H_ExplosiveBarrel.h"
 
 namespace
 {
@@ -130,6 +132,8 @@ void AL2H_TestCourse::BuildLocal()
 	AddLabel(Origin + FVector(-1120.0f, -250.0f, 200.0f), TEXT("Items"), 26.0f);
 	AddLabel(Origin + FVector(-800.0f, -250.0f, 200.0f), TEXT("Pipe (melee: R2, finisher: Triangle on a stunned robot)"), 20.0f);
 	AddLabel(Origin + FVector(1300.0f, -200.0f, 260.0f), TEXT("Robot"), 26.0f);
+	AddLabel(Origin + FVector(280.0f, -650.0f, 200.0f), TEXT("Crates: shoot or hit them"), 22.0f);
+	AddLabel(Origin + FVector(1000.0f, -220.0f, 220.0f), TEXT("Barrels: one shot, keep your distance"), 22.0f);
 
 	AddLabel(Origin + FVector(-1350.0f, 650.0f, 260.0f),
 		TEXT("TEST COURSE: tiles = footsteps, door + items = Triangle, block = hook/climb/landing, robot = music & shards"), 20.0f);
@@ -183,6 +187,15 @@ void AL2H_TestCourse::SpawnReplicated()
 			Pipe->InitialiseFromInstance(Instance);
 		}
 	}
+
+	// Crates (break with a shot or the pipe: a time shard each) and barrels next to the robot (one shot, a chain).
+	for (int32 Index = 0; Index < 3; ++Index)
+	{
+		World->SpawnActor<AL2H_Breakable>(AL2H_Breakable::StaticClass(), Origin + FVector(150.0f + Index * 130.0f, -750.0f, 28.0f), FRotator(0.0f, Index * 25.0f, 0.0f), Params);
+	}
+	World->SpawnActor<AL2H_ExplosiveBarrel>(AL2H_ExplosiveBarrel::StaticClass(), Origin + FVector(1000.0f, -320.0f, 66.0f), FRotator::ZeroRotator, Params);
+	World->SpawnActor<AL2H_ExplosiveBarrel>(AL2H_ExplosiveBarrel::StaticClass(), Origin + FVector(1180.0f, -120.0f, 66.0f), FRotator::ZeroRotator, Params);
+	World->SpawnActor<AL2H_ExplosiveBarrel>(AL2H_ExplosiveBarrel::StaticClass(), Origin + FVector(1180.0f, -520.0f, 66.0f), FRotator::ZeroRotator, Params);
 
 	// A time shard to collect, and a robot further on: the combat music when near, shards when it dies.
 	UClass* ShardClass = LoadClass<AL2H_TimeShard>(nullptr, TEXT("/Game/L2HTime/Blueprints/BP_L2H_TimeShard.BP_L2H_TimeShard_C"));
