@@ -137,6 +137,8 @@ AL2H_BaseCharacter* AL2H_EnemyRobot::FindVisiblePlayer(float& OutDistance) const
 		{
 			Range = SightRange * FlashlightSightScale;
 		}
+		// A shrunk player (Samer's shrink) is that much harder to make out.
+		Range *= FMath::Clamp(Candidate->GetActorScale3D().Z, 0.2f, 1.0f);
 
 		const FVector To = Candidate->GetActorLocation() - GetActorLocation();
 		const float Distance = To.Size();

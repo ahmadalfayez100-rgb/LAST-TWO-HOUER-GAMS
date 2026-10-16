@@ -111,8 +111,8 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 	// blocked by the fall, so without this exemption the gate below refused the hook outright while airborne.
 	const UL2H_WeaponDataAsset* ActiveData = Weapons->GetActiveWeaponData();
 	const bool bIsTool = ActiveData && ActiveData->Data.FireAbilityOverride;
-	// Held by an enemy: the hands are busy breaking free.
-	if (UL2H_StruggleComponent::IsGrabbed(Character))
+	// Held by an enemy: the hands are busy breaking free. Shrunk: too small to hold the gun.
+	if (UL2H_StruggleComponent::IsGrabbed(Character) || Character->GetActorScale3D().Z < 0.8f)
 	{
 		Finish(false);
 		return;

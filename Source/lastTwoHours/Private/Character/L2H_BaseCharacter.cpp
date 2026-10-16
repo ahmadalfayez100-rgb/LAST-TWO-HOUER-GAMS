@@ -64,6 +64,7 @@
 #include "Character/L2H_StruggleComponent.h"
 #include "Character/L2H_PauseMenuComponent.h"
 #include "Character/L2H_TimeMenuComponent.h"
+#include "Character/L2H_AbilityModeComponent.h"
 
 AL2H_BaseCharacter::AL2H_BaseCharacter()
 {
@@ -225,6 +226,8 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 	CreateDefaultSubobject<UL2H_PauseMenuComponent>(TEXT("L2H_PauseMenu"));
 	// The time menu on the clock face (D-pad Left, and the terminal's menu).
 	CreateDefaultSubobject<UL2H_TimeMenuComponent>(TEXT("L2H_TimeMenu"));
+	// L1's abilities, switched with R1 (Samer's balls, Yousef's bend or thrown orb).
+	CreateDefaultSubobject<UL2H_AbilityModeComponent>(TEXT("L2H_AbilityModes"));
 	CoverAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Crouch.IA_Crouch"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	// Mapped only by IMC_L2H_Cover, which the cover component adds while in cover over the Blueprint's input.
 	CoverJumpAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/L2HTime/Input/IA_L2H_CoverCross.IA_L2H_CoverCross"), nullptr, LOAD_NoWarn | LOAD_Quiet);
