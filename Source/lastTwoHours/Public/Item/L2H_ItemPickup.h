@@ -61,6 +61,12 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "L2H|Item")
 	TObjectPtr<UStaticMeshComponent> ItemMesh;
 
+public:
+	/** Optional: taking this pickup also adds the weapon to the taker's loadout (D-pad Down to select it). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|Item")
+	TObjectPtr<class UL2H_WeaponDataAsset> GrantsWeapon;
+
+protected:
 	/** The whole instance, replicated, so a client sees what it is about to pick up. */
 	UPROPERTY(EditAnywhere, ReplicatedUsing = OnRep_Instance, BlueprintReadOnly, Category = "L2H|Item")
 	FL2H_ItemInstance Instance;

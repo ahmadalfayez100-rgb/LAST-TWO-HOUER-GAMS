@@ -54,6 +54,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
 	int32 GetLoadoutSize() const { return Loadout.Num(); }
 
+	/** Server only: adds Data to the end of the loadout unless it is already there (a weapon picked up). */
+	void ServerAddWeapon(UL2H_WeaponDataAsset* Data);
+
 	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
 	int32 GetAmmoInClip() const { return AmmoInClip; }
 
@@ -135,8 +138,9 @@ protected:
 	/** The spawned actor for a loadout entry, creating it on the authority if it does not exist yet. */
 	AL2H_WeaponActor* ResolveWeaponActor(int32 Index);
 
-	/** The authored loadout, in cycle order. Entry 0 is what the pawn starts holding. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Weapon")
+	/** The authored loadout, in cycle order. Entry 0 is what the pawn starts holding. Replicated: a weapon
+	 * picked up during play (ServerAddWeapon) has to exist on the owner's machine too. */
+	UPROPERTY(EditDefaultsOnly, Replicated, BlueprintReadOnly, Category = "L2H|Weapon")
 	TArray<TObjectPtr<UL2H_WeaponDataAsset>> Loadout;
 
 	/** What the component spawns per entry. Authored so no Blueprint is named in C++. */

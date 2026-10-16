@@ -2,6 +2,10 @@
 
 #include "Item/L2H_ItemPickup.h"
 
+#include "Character/L2H_BaseCharacter.h"
+#include "Components/CapsuleComponent.h"
+#include "Weapon/L2H_WeaponComponent.h"
+
 #include "Components/StaticMeshComponent.h"
 #include "Item/L2H_InventoryComponent.h"
 #include "Item/L2H_ItemDataAsset.h"
@@ -98,6 +102,20 @@ void AL2H_ItemPickup::L2H_Interact_Implementation(AActor* Interactor)
 			*GetNameSafe(Instance.Data),
 			*GetNameSafe(Interactor),
 			*Instance.InstanceId.ToString()));
+
+		// The hands go to where the item lay: from the floor, a table, or a shelf.
+		if (AL2H_BaseCharacter* Taker = Cast<AL2H_BaseCharacter>(Interactor))
+		{
+			if (GrantsWeapon)
+			{
+				if (UL2H_WeaponComponent* Weapons = Taker->FindComponentByClass<UL2H_WeaponComponent>())
+				{
+					Weapons->ServerAddWeapon(GrantsWeapon);
+				}
+			}
+			const float FeetZ = Taker->GetActorLocation().Z - Taker->GetSimpleCollisionHalfHeight();
+			Taker->PlayInteractAnim(Taker->GetPickupAnim(GetActorLocation().Z - FeetZ));
+		}
 
 		// A placed pickup is only hidden: a rewind to an earlier checkpoint puts it back where it was. One
 		// dropped at runtime has no place in any checkpoint's world, so it simply goes.

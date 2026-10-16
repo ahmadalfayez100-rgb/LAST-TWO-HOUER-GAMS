@@ -2,6 +2,8 @@
 
 #include "Weapon/L2H_WeaponComponent.h"
 
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemInterface.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -48,6 +50,7 @@ void UL2H_WeaponComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(UL2H_WeaponComponent, ActiveIndex);
 	DOREPLIFETIME(UL2H_WeaponComponent, AmmoInClip);
 	DOREPLIFETIME(UL2H_WeaponComponent, bAiming);
+	DOREPLIFETIME(UL2H_WeaponComponent, Loadout);
 }
 
 UL2H_WeaponDataAsset* UL2H_WeaponComponent::GetActiveWeaponData() const
@@ -446,4 +449,29 @@ void UL2H_WeaponComponent::OnRep_AmmoInClip()
 void UL2H_WeaponComponent::OnRep_Aiming()
 {
 	OnWeaponChanged.Broadcast();
+}
+
+void UL2H_WeaponComponent::ServerAddWeapon(UL2H_WeaponDataAsset* Data)
+{
+	if (!Data || !GetOwner() || !GetOwner()->HasAuthority() || Loadout.Contains(Data))
+	{
+		return;
+	}
+	Loadout.Add(Data);
+
+	// A weapon whose shot is its own ability (the pipe, the hook) gets it now: granted later, from inside the
+	// fire ability, the grant is deferred by the ability list lock and the first press is refused.
+	if (const TSubclassOf<UGameplayAbility> Override = Data->Data.FireAbilityOverride)
+	{
+		const IAbilitySystemInterface* Owner = Cast<IAbilitySystemInterface>(GetOwner());
+		if (UAbilitySystemComponent* ASC = Owner ? Owner->GetAbilitySystemComponent() : nullptr)
+		{
+			if (!ASC->FindAbilitySpecFromClass(Override))
+			{
+				ASC->GiveAbility(FGameplayAbilitySpec(Override, 1));
+			}
+		}
+	}
+	L2HTime::LogImportant(FString::Printf(TEXT("Weapon %s: picked up %s (loadout %d)"),
+		*GetNameSafe(GetOwner()), *GetNameSafe(Data), Loadout.Num()));
 }

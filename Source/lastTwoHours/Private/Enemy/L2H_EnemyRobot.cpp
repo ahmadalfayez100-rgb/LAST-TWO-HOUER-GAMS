@@ -59,6 +59,7 @@ void AL2H_EnemyRobot::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutL
 
 	DOREPLIFETIME(AL2H_EnemyRobot, Health);
 	DOREPLIFETIME(AL2H_EnemyRobot, bDead);
+	DOREPLIFETIME(AL2H_EnemyRobot, bStunned);
 }
 
 void AL2H_EnemyRobot::BeginPlay()
@@ -106,8 +107,20 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
+	UpdateStunLook();
+
 	if (!HasAuthority() || bDead)
 	{
+		return;
+	}
+
+	if (bStunned)
+	{
+		const UWorld* StunWorld = GetWorld();
+		if (StunWorld && StunWorld->GetTimeSeconds() >= StunEndTime)
+		{
+			bStunned = false;
+		}
 		return;
 	}
 
@@ -211,6 +224,50 @@ void AL2H_EnemyRobot::Die()
 	}
 
 	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s destroyed"), *GetNameSafe(this)));
+}
+
+void AL2H_EnemyRobot::Stun(float Seconds)
+{
+	const UWorld* World = GetWorld();
+	if (!HasAuthority() || bDead || !World || Seconds <= 0.0f)
+	{
+		return;
+	}
+	bStunned = true;
+	StunEndTime = FMath::Max(StunEndTime, World->GetTimeSeconds() + Seconds);
+	GetCharacterMovement()->StopMovementImmediately();
+	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s stunned for %.1fs"), *GetNameSafe(this), Seconds));
+}
+
+void AL2H_EnemyRobot::UpdateStunLook()
+{
+	// The mesh's authored rotation is (0, -90, 0); a stun rocks it about the forward axis.
+	const UWorld* World = GetWorld();
+	const float Rock = (bStunned && !bDead && World) ? FMath::Sin(World->GetTimeSeconds() * 14.0f) * 7.0f : 0.0f;
+	if (!bDead)
+	{
+		GetMesh()->SetRelativeRotation(FRotator(0.0f, -90.0f, Rock));
+	}
+}
+
+void AL2H_EnemyRobot::FinishBy(AActor* Attacker)
+{
+	if (!HasAuthority() || bDead)
+	{
+		return;
+	}
+	const FVector Away = Attacker ? (GetActorLocation() - Attacker->GetActorLocation()).GetSafeNormal2D() : -GetActorForwardVector();
+	Health = 0.0f;
+	Die();
+	MulticastThrow(Away * 700.0f + FVector(0.0f, 0.0f, 350.0f));
+	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s finished by %s"), *GetNameSafe(this), *GetNameSafe(Attacker)));
+}
+
+void AL2H_EnemyRobot::MulticastThrow_Implementation(FVector_NetQuantize Velocity)
+{
+	// On every machine after the ragdoll is on, so the wreck flies the same way everywhere.
+	ApplyDeathPhysics();
+	GetMesh()->SetAllPhysicsLinearVelocity(FVector(Velocity));
 }
 
 void AL2H_EnemyRobot::OnRep_Dead()

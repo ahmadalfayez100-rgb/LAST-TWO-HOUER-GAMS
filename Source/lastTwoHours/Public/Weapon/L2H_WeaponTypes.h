@@ -161,6 +161,13 @@ struct FL2H_WeaponBaseData
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Weapon", meta = (ClampMin = "0.05", ClampMax = "1.0"))
 	float AimSpeedScale = 0.5f;
 
+	/** Played on the shooter's own camera on every shot. Empty = none (the hook, a melee weapon). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Weapon")
+	TSubclassOf<class UCameraShakeBase> FireCameraShake;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Weapon", meta = (ClampMin = "0.0"))
+	float FireCameraShakeScale = 1.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Weapon")
 	TObjectPtr<USkeletalMesh> Mesh;
 

@@ -19,6 +19,7 @@
 #include "Save/L2H_SaveSubsystem.h"
 #include "World/L2H_CheckpointTerminal.h"
 #include "World/L2H_ReviveStation.h"
+#include "World/L2H_TestCourse.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "Item/L2H_InventoryComponent.h"
@@ -160,6 +161,24 @@ void AL2H_TimeDirector::BeginPlay()
 	if (Config && Config->bSpawnTestStations && GetNetMode() != NM_Client)
 	{
 		SpawnTestStations();
+	}
+
+	// Testing aid: a small course beside the first PlayerStart, built at runtime so nothing is saved into the level.
+	if (Config && Config->bSpawnTestCourse && GetNetMode() != NM_Client)
+	{
+		for (TActorIterator<APlayerStart> It(GetWorld()); It; ++It)
+		{
+			FVector At = It->GetActorLocation() + FVector(300.0f, -1800.0f, 0.0f);
+			FHitResult Floor;
+			if (GetWorld()->LineTraceSingleByChannel(Floor, At + FVector(0.0f, 0.0f, 200.0f), At - FVector(0.0f, 0.0f, 500.0f), ECC_Visibility))
+			{
+				At.Z = Floor.ImpactPoint.Z;
+			}
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			GetWorld()->SpawnActor<AL2H_TestCourse>(AL2H_TestCourse::StaticClass(), At, FRotator::ZeroRotator, Params);
+			break;
+		}
 	}
 
 	// Immediate pass so the first player is registered in the same frame, then a slow repeating
@@ -1641,6 +1660,12 @@ void AL2H_TimeDirector::ApplyHealthDamage(AActor* Target, float Amount)
 	// seconds. Charging the full 40 would make the killing blow cost more than the life it took.
 	const float HealthAfter = GetHealthFor(Target);
 	const float DamageTaken = FMath::Max(HealthBefore - HealthAfter, 0.0f);
+
+	// The hit is felt on the victim's own camera, in proportion to what it took.
+	if (AL2H_BaseCharacter* Victim = Cast<AL2H_BaseCharacter>(Target); Victim && DamageTaken > 0.0f)
+	{
+		Victim->PlayCameraShakeOnOwner(Victim->HitCameraShake, FMath::Clamp(DamageTaken / FMath::Max(Victim->HitShakeDamage, 1.0f), 0.4f, 2.0f));
+	}
 
 	L2HTime::LogImportant(FString::Printf(TEXT("TimeDirector: %s took %.1f damage (%.1f -> %.1f hp)"),
 		*GetNameSafe(Target), DamageTaken, HealthBefore, HealthAfter));

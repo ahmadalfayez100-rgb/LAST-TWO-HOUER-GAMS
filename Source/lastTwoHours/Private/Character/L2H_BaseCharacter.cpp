@@ -12,6 +12,7 @@
 #include "AnimationRuntime.h"
 #include "Character/L2H_CoverComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/CameraShakeBase.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -163,6 +164,28 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 		TEXT("/Game/L2HTime/Input/IMC_L2H_TimeMenu.IMC_L2H_TimeMenu"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	DebugMappingContext = LoadObject<UInputMappingContext>(nullptr,
 		TEXT("/Game/L2HTime/Input/IMC_L2H_Debug.IMC_L2H_Debug"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+
+	// Interaction clips. Defaults only; the Blueprint may override.
+	for (int32 Index = 1; Index <= 3; ++Index)
+	{
+		const FString Path = FString::Printf(TEXT("/Game/_Project/animation/L2H/Interact/A_L2H_Pickup_%d.A_L2H_Pickup_%d"), Index, Index);
+		if (UAnimSequenceBase* Clip = LoadObject<UAnimSequenceBase>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			PickupAnims.Add(Clip);
+		}
+	}
+	DoorPushLeftAnim = LoadObject<UAnimSequenceBase>(nullptr,
+		TEXT("/Game/ResidentHorrorV2/Character/Animations/Door/AS_anim_OpenDoor_Push_L.AS_anim_OpenDoor_Push_L"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	DoorPushRightAnim = LoadObject<UAnimSequenceBase>(nullptr,
+		TEXT("/Game/ResidentHorrorV2/Character/Animations/Door/AS_anim_OpenDoor_Push_R.AS_anim_OpenDoor_Push_R"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	FinisherAnim = LoadObject<UAnimSequenceBase>(nullptr,
+		TEXT("/Game/ResidentHorrorV2/Character/Animations/AS_GroinKick_Att.AS_GroinKick_Att"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+
+	// Camera feedback (ResidentHorrorV2 shakes). Defaults only; the Blueprint may override.
+	HitCameraShake = LoadClass<UCameraShakeBase>(nullptr,
+		TEXT("/Game/ResidentHorrorV2/Blueprints/BP_CameraShake/Player/CS_ShakeV2.CS_ShakeV2_C"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	LandCameraShake = LoadClass<UCameraShakeBase>(nullptr,
+		TEXT("/Game/ResidentHorrorV2/Blueprints/BP_CameraShake/CS_Jump.CS_Jump_C"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 
 	// Carry clips from the deliveryman pack, retargeted to UEFN. Defaults only; the Blueprint may override.
 	{
@@ -844,6 +867,13 @@ void AL2H_BaseCharacter::Input_Interact(const FInputActionValue& Value)
 		return;
 	}
 
+	// A stunned enemy in front: Interact is the finisher.
+	if (AL2H_EnemyRobot* Stunned = FindFinisherTarget())
+	{
+		ServerFinisher(Stunned);
+		return;
+	}
+
 	// A checkpoint is a place rather than an object, so the trace the interact ability runs could never
 	// find it. It is also the one verb here that is pure UI, resolved on the machine showing the menu,
 	// so it is answered before any ability is asked. One key opens and closes.
@@ -1109,6 +1139,11 @@ void AL2H_BaseCharacter::Landed(const FHitResult& Hit)
 	const float Impact = -GetVelocity().Z;
 	Super::Landed(Hit);
 
+	if (IsLocallyControlled() && LandCameraShake && Impact > HardLandingSpeed)
+	{
+		PlayCameraShakeOnOwner(LandCameraShake, FMath::Clamp(Impact / FMath::Max(HardLandingSpeed, 1.0f) - 0.5f, 0.5f, 2.0f));
+	}
+
 	if (!HasAuthority() || bDead || bDowned)
 	{
 		return;
@@ -1373,6 +1408,97 @@ int32 AL2H_BaseCharacter::GetCarryPose() const
 	const UPrimitiveComponent* Root = Cast<UPrimitiveComponent>(CarriedActor->GetRootComponent());
 	const bool bBulky = Root && Root->Bounds.BoxExtent.GetMax() > 35.0f;
 	return (bHeavy || bBulky) ? 2 : 1;
+}
+
+void AL2H_BaseCharacter::MulticastStopInteractAnim_Implementation(float BlendOut)
+{
+	if (UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr)
+	{
+		AnimInstance->StopSlotAnimation(BlendOut, TEXT("DefaultSlot"));
+	}
+}
+
+AL2H_EnemyRobot* AL2H_BaseCharacter::FindFinisherTarget() const
+{
+	UWorld* World = GetWorld();
+	if (!World || IsCarrying())
+	{
+		return nullptr;
+	}
+	for (TActorIterator<AL2H_EnemyRobot> It(World); It; ++It)
+	{
+		const FVector To = It->GetActorLocation() - GetActorLocation();
+		if (It->IsStunned() && !It->IsDead() && To.Size2D() <= FinisherRange
+			&& FVector::DotProduct(To.GetSafeNormal2D(), GetActorForwardVector().GetSafeNormal2D()) > 0.2f)
+		{
+			return *It;
+		}
+	}
+	return nullptr;
+}
+
+void AL2H_BaseCharacter::ServerFinisher_Implementation(AL2H_EnemyRobot* Target)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Target || Target->IsDead() || !Target->IsStunned()
+		|| FVector::Dist2D(Target->GetActorLocation(), GetActorLocation()) > FinisherRange + 60.0f)
+	{
+		return;
+	}
+
+	// Squared up to the enemy, the kick, and the enemy goes down when the foot lands.
+	SetActorRotation(FRotator(0.0f, (Target->GetActorLocation() - GetActorLocation()).Rotation().Yaw, 0.0f));
+	PlayInteractAnim(FinisherAnim);
+	TWeakObjectPtr<AL2H_EnemyRobot> WeakTarget(Target);
+	FTimerHandle Impact;
+	World->GetTimerManager().SetTimer(Impact, FTimerDelegate::CreateWeakLambda(this, [this, WeakTarget]()
+	{
+		if (AL2H_EnemyRobot* Enemy = WeakTarget.Get())
+		{
+			Enemy->FinishBy(this);
+			PlayCameraShakeOnOwner(HitCameraShake, 0.8f);
+		}
+	}), FMath::Max(FinisherImpactTime, 0.01f), false);
+	FTimerHandle End;
+	World->GetTimerManager().SetTimer(End, FTimerDelegate::CreateWeakLambda(this, [this]()
+	{
+		MulticastStopInteractAnim(0.35f);
+	}), FMath::Max(FinisherEndTime, FinisherImpactTime + 0.1f), false);
+}
+
+void AL2H_BaseCharacter::PlayInteractAnim(UAnimSequenceBase* Anim)
+{
+	// Not over a carry, a climb or an aim: those own the body, and a pick-up there would fight them.
+	if (Anim && HasAuthority() && !CarriedActor && !IsBusyTraversing() && !IsDowned() && !IsDead())
+	{
+		MulticastInteractAnim(Anim);
+	}
+}
+
+void AL2H_BaseCharacter::MulticastInteractAnim_Implementation(UAnimSequenceBase* Anim)
+{
+	UAnimInstance* AnimInstance = GetMesh() ? GetMesh()->GetAnimInstance() : nullptr;
+	if (Anim && AnimInstance)
+	{
+		if (UAnimMontage* Montage = Cast<UAnimMontage>(Anim))
+		{
+			AnimInstance->Montage_Play(Montage);
+		}
+		else
+		{
+			AnimInstance->PlaySlotAnimationAsDynamicMontage(Anim, TEXT("DefaultSlot"), 0.2f, 0.25f);
+		}
+	}
+}
+
+UAnimSequenceBase* AL2H_BaseCharacter::GetPickupAnim(float HeightAboveFeet) const
+{
+	if (PickupAnims.Num() == 0)
+	{
+		return nullptr;
+	}
+	// The three MSHF clips are all a standing reach-and-take at waist height; one is picked for variety.
+	return PickupAnims[FMath::RandRange(0, PickupAnims.Num() - 1)];
 }
 
 void AL2H_BaseCharacter::MulticastCarryAnim_Implementation(UAnimSequenceBase* Anim, bool bPickup, FVector_NetQuantize RestLocation)
@@ -2675,8 +2801,28 @@ void AL2H_BaseCharacter::ClientInteractFoundNothing_Implementation()
 	OnInteractFoundNothing();
 }
 
+void AL2H_BaseCharacter::PlayCameraShakeOnOwner(TSubclassOf<UCameraShakeBase> Shake, float Scale)
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!Shake || !PC || Scale <= 0.0f)
+	{
+		return;
+	}
+	// A client RPC: on the owning machine it simply runs, from the server it reaches the owner's camera.
+	PC->ClientStartCameraShake(Shake, Scale);
+}
+
 void AL2H_BaseCharacter::MulticastShotFX_Implementation(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHook)
 {
+	if (!bHook && IsLocallyControlled())
+	{
+		const UL2H_WeaponComponent* Weapons = FindComponentByClass<UL2H_WeaponComponent>();
+		const UL2H_WeaponDataAsset* Data = Weapons ? Weapons->GetActiveWeaponData() : nullptr;
+		if (Data && Data->Data.FireCameraShake)
+		{
+			PlayCameraShakeOnOwner(Data->Data.FireCameraShake, Data->Data.FireCameraShakeScale);
+		}
+	}
 	OnShotFX(Start, End, bHook);
 }
 
@@ -3396,9 +3542,25 @@ void AL2H_BaseCharacter::RefreshTimeQuickMenu()
 // Checkpoint terminals
 // -------------------------------------------------------------------------------------------
 
+void AL2H_BaseCharacter::ShowAreaName(const FText& Name)
+{
+	if (IsLocallyControlled() && TimeClockWidget)
+	{
+		TimeClockWidget->ShowAreaName(Name);
+	}
+}
+
 void AL2H_BaseCharacter::SetCurrentTerminal(AL2H_CheckpointTerminal* InTerminal)
 {
+	const bool bArrived = InTerminal && InTerminal != CurrentTerminal;
 	CurrentTerminal = InTerminal;
+
+	// The place is named on arrival, on this player's own screen.
+	if (bArrived)
+	{
+		ShowAreaName(!InTerminal->DisplayName.IsEmpty() ? InTerminal->DisplayName
+			: (InTerminal->SavesOnArrival() ? NSLOCTEXT("L2HArea", "Hub", "Hub") : NSLOCTEXT("L2HArea", "Spot", "Save spot")));
+	}
 
 	// Leaving the terminal the menu was opened at closes it: the menu belongs to the place, not to the
 	// pawn, so walking out is a valid way to put it down.

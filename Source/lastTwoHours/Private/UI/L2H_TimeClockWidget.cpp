@@ -80,6 +80,31 @@ void UL2H_TimeClockWidget::NativeConstruct()
 	{
 		DeltaText->SetText(FText::GetEmpty());
 	}
+
+	if (!AreaText && WidgetTree)
+	{
+		if (UPanelWidget* Root = Cast<UPanelWidget>(WidgetTree->RootWidget))
+		{
+			AreaText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("AreaText"));
+			FSlateFontInfo Font = AreaText->GetFont();
+			Font.Size = 34;
+			AreaText->SetFont(Font);
+			AreaText->SetJustification(ETextJustify::Center);
+			AreaText->SetShadowOffset(FVector2D(2.0f, 2.0f));
+			AreaText->SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.85f));
+			if (UCanvasPanelSlot* AreaSlot = Cast<UCanvasPanelSlot>(Root->AddChild(AreaText)))
+			{
+				AreaSlot->SetAutoSize(true);
+				AreaSlot->SetAnchors(FAnchors(0.5f, 0.12f));
+				AreaSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+				AreaSlot->SetPosition(FVector2D::ZeroVector);
+			}
+		}
+	}
+	if (AreaText)
+	{
+		AreaText->SetText(FText::GetEmpty());
+	}
 }
 
 UTextBlock* UL2H_TimeClockWidget::MakeTextIfMissing(const TCHAR* Name, int32 FontSize)
@@ -153,6 +178,22 @@ void UL2H_TimeClockWidget::NativeTick(const FGeometry& MyGeometry, float InDelta
 	{
 		const float Pulse = 0.5f + 0.5f * FMath::Sin(Now * 2.0f * PI * 1.5f);
 		TimeText->SetColorAndOpacity(FSlateColor(FMath::Lerp(LowColor, DownedColor, Pulse)));
+	}
+
+	// The area banner: in over half a second, held, out over a second.
+	if (AreaText && AreaShownAt >= 0.0f)
+	{
+		const float Age = Now - AreaShownAt;
+		const float Alpha = Age < 0.5f ? Age / 0.5f : (Age < AreaSeconds ? 1.0f : 1.0f - (Age - AreaSeconds));
+		if (Alpha <= 0.0f)
+		{
+			AreaText->SetText(FText::GetEmpty());
+			AreaShownAt = -1.0f;
+		}
+		else
+		{
+			AreaText->SetRenderOpacity(FMath::Clamp(Alpha, 0.0f, 1.0f));
+		}
 	}
 
 	InfoRefreshIn -= InDeltaTime;
@@ -286,6 +327,20 @@ const AL2H_CheckpointTerminal* UL2H_TimeClockWidget::FindNextHub(const AL2H_Base
 		}
 	}
 	return Best;
+}
+
+void UL2H_TimeClockWidget::ShowAreaName(const FText& Name)
+{
+	if (!AreaText || Name.IsEmpty())
+	{
+		return;
+	}
+	const UWorld* World = GetWorld();
+	const UL2H_LevelTimeConfig* Config = AL2H_TimeDirector::GetLevelConfig(this);
+	AreaSeconds = Config ? Config->AreaNameSeconds : 3.0f;
+	AreaText->SetText(Name);
+	AreaText->SetRenderOpacity(0.0f);
+	AreaShownAt = World ? World->GetRealTimeSeconds() : 0.0f;
 }
 
 void UL2H_TimeClockWidget::SetTimeSource(AL2H_BaseCharacter* InCharacter)

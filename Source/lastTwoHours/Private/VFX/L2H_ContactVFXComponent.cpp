@@ -9,8 +9,12 @@
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraSystem.h"
+#include "Components/CapsuleComponent.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "Time/L2HTimeLog.h"
+#include "TimerManager.h"
 #include "VFX/L2H_VFXLibrary.h"
 
 namespace
@@ -31,6 +35,21 @@ UL2H_ContactVFXComponent::UL2H_ContactVFXComponent()
 	// Cosmetic only. Every machine plays its own copy of what it can see, so a replicated effect would
 	// be bandwidth spent on something with no gameplay consequence.
 	SetIsReplicatedByDefault(false);
+
+	// Surface footsteps from ResidentHorrorV2, in the order the project defines its surface types
+	// (DefaultEngine.ini: 1 Grass, 2 Wood, 3 Metal, 4 Water, 5 Glass, 6 Snow, 7 Gravel, 8 Mud, 9 Leaves, 10 Ice).
+	static const TCHAR* const SurfaceCues[] = {
+		TEXT("CUE_grass_1_Cue"), TEXT("CUE_Floor_Mono_05_Cue"), TEXT("CUE_Footstep_Metal_Boots_Jog_1_Cue1"),
+		TEXT("CUE_water_6_Cue"), TEXT("CUE_Glass_Walk_1_Cue"), TEXT("CUE_Snow_Mono_01_Cue"), TEXT("CUE_Grit_Mono_01_Cue"),
+		TEXT("CUE_Mud_Mono_05_Cue"), TEXT("CUE_FootstepLeaves_Boots_Jog_1_Cue"), TEXT("CUE_Ice_Mono_05_Cue") };
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(SurfaceCues); ++Index)
+	{
+		const FString Path = FString::Printf(TEXT("/Game/ResidentHorrorV2/Audio/Cue/%s.%s"), SurfaceCues[Index], SurfaceCues[Index]);
+		if (USoundBase* Sound = LoadObject<USoundBase>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
+		{
+			FootstepSounds.Add(static_cast<EPhysicalSurface>(SurfaceType1 + Index), Sound);
+		}
+	}
 }
 
 void UL2H_ContactVFXComponent::BeginPlay()
@@ -51,6 +70,59 @@ void UL2H_ContactVFXComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
 	UpdateFootsteps(DeltaTime);
+	UpdateFootPlants();
+}
+
+void UL2H_ContactVFXComponent::UpdateFootPlants()
+{
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	const USkeletalMeshComponent* Mesh = Character ? Character->GetMesh() : nullptr;
+	const UCharacterMovementComponent* Movement = Character ? Character->GetCharacterMovement() : nullptr;
+	if (!Mesh || !Movement || FootstepSounds.Num() == 0)
+	{
+		return;
+	}
+
+	// Off the ground every foot is "lifted", so the first contact after a jump or a climb is a step.
+	if (!Movement->IsMovingOnGround())
+	{
+		bLeftFootLifted = bRightFootLifted = true;
+		return;
+	}
+
+	const float HalfHeight = Character->GetCapsuleComponent() ? Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 90.0f;
+	const float GroundZ = Character->GetActorLocation().Z - HalfHeight;
+	const float Speed = Movement->Velocity.Size2D();
+
+	auto CheckFoot = [&](FName Socket, bool& bLifted)
+	{
+		const FVector Foot = Mesh->GetSocketLocation(Socket);
+		const float Height = Foot.Z - GroundZ;
+		if (Height > FootLiftHeight)
+		{
+			bLifted = true;
+			return;
+		}
+		if (!bLifted || Height > FootPlantHeight)
+		{
+			return;
+		}
+		bLifted = false;
+		if (Speed < 30.0f)
+		{
+			return;
+		}
+
+		const EPhysicalSurface Surface = ResolveSurface(Foot);
+		const TObjectPtr<USoundBase>* Sound = FootstepSounds.Find(Surface);
+		if (Sound && *Sound)
+		{
+			const float Pace = Movement->MaxWalkSpeed > 0.0f ? FMath::Clamp(Speed / Movement->MaxWalkSpeed, 0.0f, 1.0f) : 1.0f;
+			UGameplayStatics::PlaySoundAtLocation(this, *Sound, Foot, FMath::Lerp(QuietStepVolume, 1.0f, Pace));
+		}
+	};
+	CheckFoot(LeftFootSocket, bLeftFootLifted);
+	CheckFoot(RightFootSocket, bRightFootLifted);
 }
 
 void UL2H_ContactVFXComponent::SetLibrary(UL2H_VFXLibrary* InLibrary)

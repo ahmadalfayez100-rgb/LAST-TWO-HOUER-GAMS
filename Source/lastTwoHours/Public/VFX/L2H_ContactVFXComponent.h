@@ -10,6 +10,7 @@
 
 class UL2H_VFXLibrary;
 class UNiagaraComponent;
+class USoundBase;
 
 /**
  * The one place this pawn's contact effects are spawned.
@@ -81,6 +82,25 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|VFX", meta = (ClampMin = "0.0"))
 	float CooldownScale = 1.0f;
 
+	/**
+	 * Footstep sound per surface, played at the foot on every plant. The default surface (concrete) is left
+	 * to GASP's own foley, which already plays on its anim notifies; these add the other ground types.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Audio")
+	TMap<TEnumAsByte<EPhysicalSurface>, TObjectPtr<USoundBase>> FootstepSounds;
+
+	/** A foot counts as planted below this height (foot bone above the capsule's bottom, cm)... */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Audio", meta = (ClampMin = "0.0"))
+	float FootPlantHeight = 18.0f;
+
+	/** ...and as lifted above this one. The gap keeps a foot hovering at the line from clicking twice. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Audio", meta = (ClampMin = "0.0"))
+	float FootLiftHeight = 28.0f;
+
+	/** Volume at a slow walk; full volume at MaxWalkSpeed. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Audio", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float QuietStepVolume = 0.45f;
+
 private:
 	/** When each row was last allowed to spawn, keyed the way the library is. */
 	UPROPERTY(Transient)
@@ -105,4 +125,9 @@ private:
 	UNiagaraComponent* SpawnEntry(const FL2H_VFXEntry& Entry, FName Socket, FVector ContactLocation);
 
 	void UpdateFootsteps(float DeltaTime);
+
+	/** Foot-plant detection from the foot bones, for the footstep sound. */
+	void UpdateFootPlants();
+	bool bLeftFootLifted = false;
+	bool bRightFootLifted = false;
 };

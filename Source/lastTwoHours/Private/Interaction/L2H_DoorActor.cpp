@@ -2,6 +2,8 @@
 
 #include "Interaction/L2H_DoorActor.h"
 
+#include "Character/L2H_BaseCharacter.h"
+
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Net/UnrealNetwork.h"
@@ -147,6 +149,17 @@ void AL2H_DoorActor::L2H_Interact_Implementation(AActor* Interactor)
 	}
 
 	bOpen = !bOpen;
+
+	// Opening is a push with the hand on the side the door is on; closing needs no clip.
+	if (bOpen)
+	{
+		if (AL2H_BaseCharacter* Opener = Cast<AL2H_BaseCharacter>(Interactor))
+		{
+			const FVector ToDoor = GetActorLocation() - Opener->GetActorLocation();
+			const bool bRight = FVector::DotProduct(ToDoor, Opener->GetActorRightVector()) >= 0.0f;
+			Opener->PlayInteractAnim(bRight ? Opener->DoorPushRightAnim.Get() : Opener->DoorPushLeftAnim.Get());
+		}
+	}
 
 	L2HTime::LogImportant(FString::Printf(
 		TEXT("Door %s: %s by %s"),

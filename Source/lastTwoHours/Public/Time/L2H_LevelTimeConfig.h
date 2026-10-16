@@ -282,6 +282,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Testing")
 	bool bSpawnTestStations = false;
 
+	/** Testing aid: builds a small course (surface tiles, door, items, climb block, shard, robot) beside the first PlayerStart. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Testing")
+	bool bSpawnTestCourse = false;
+
 	/** What a hub's shop sells, paid from the bank at each item's Price (banked seconds). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Shop")
 	TArray<TObjectPtr<UL2H_ItemDataAsset>> ShopItems;
@@ -376,6 +380,34 @@ public:
 	/** Seconds each enemy shard hands back. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Shards", meta = (ClampMin = "1.0"))
 	float EnemyShardValue = 5.0f;
+
+	// -------------------------------------------------------------------------------------------
+	// Music (UL2H_MusicSubsystem, per machine): the ambient track, and the combat track while an enemy is
+	// alive within MusicCombatRadius of a player on this machine. Tracks should be looping assets.
+	// -------------------------------------------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music")
+	TObjectPtr<USoundBase> AmbientMusic;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music")
+	TObjectPtr<USoundBase> CombatMusic;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music", meta = (ClampMin = "0.0"))
+	float MusicCombatRadius = 1500.0f;
+
+	/** Seconds the combat track holds after the last enemy left the radius (or died). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music", meta = (ClampMin = "0.0"))
+	float MusicCombatHold = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music", meta = (ClampMin = "0.0"))
+	float MusicFadeTime = 2.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Music", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+	float MusicVolume = 0.6f;
+
+	/** Seconds an area's name stays on screen when a player walks into it (a hub, a save spot, a named area). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|UI", meta = (ClampMin = "0.5"))
+	float AreaNameSeconds = 3.0f;
 
 	/** Instant, SetByCaller on Data.Health.Damage. Every hit funnels through this. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Effects")

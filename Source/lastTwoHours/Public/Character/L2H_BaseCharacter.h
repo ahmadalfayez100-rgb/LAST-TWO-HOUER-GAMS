@@ -19,6 +19,7 @@ class UL2H_TimeQuickMenuWidget;
 class UL2H_CoverComponent;
 
 class UCameraComponent;
+class UCameraShakeBase;
 class UInputAction;
 class UInputMappingContext;
 class UGameplayAbility;
@@ -540,6 +541,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "L2H|Checkpoint")
 	void SetCurrentTerminal(AL2H_CheckpointTerminal* InTerminal);
 
+	/** Names the place this player just walked into, on their own screen (no-op elsewhere). */
+	UFUNCTION(BlueprintCallable, Category = "L2H|UI")
+	void ShowAreaName(const FText& Name);
+
 	/** Opens the terminal menu on this player's own screen. False when there is no hub to open. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|Checkpoint")
 	bool TryOpenTerminalMenu();
@@ -665,6 +670,28 @@ public:
 	 */
 	UFUNCTION(NetMulticast, Reliable)
 	void MulticastShotFX(FVector_NetQuantize Start, FVector_NetQuantize End, bool bHook);
+
+	// ---------------------------------------------------------------------------------------
+	// Camera feedback. Shakes play on this player's own camera only; the server reaches a remote
+	// player's camera through the controller's client RPC.
+	// ---------------------------------------------------------------------------------------
+
+	/** Plays Shake on this player's camera, from the server or from the owning machine. */
+	void PlayCameraShakeOnOwner(TSubclassOf<UCameraShakeBase> Shake, float Scale = 1.0f);
+
+	/** On every hit that costs Health, scaled by the damage (HitShakeDamage = scale 1). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Feedback")
+	TSubclassOf<UCameraShakeBase> HitCameraShake;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Feedback", meta = (ClampMin = "1.0"))
+	float HitShakeDamage = 25.0f;
+
+	/** On a landing faster than HardLandingSpeed (cm/s, downward), scaled up to twice by the speed. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Feedback")
+	TSubclassOf<UCameraShakeBase> LandCameraShake;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Feedback", meta = (ClampMin = "0.0"))
+	float HardLandingSpeed = 750.0f;
 
 	/** The hook's reel, mirrored on the owning client so its prediction moves with the server. */
 	UFUNCTION(Client, Reliable)
@@ -1089,6 +1116,53 @@ protected:
 
 	/** Body state for being carried: the rider clip on, capsule collision off; undone on put-down. */
 	void ApplyCarriedPose(bool bCarried);
+
+public:
+	/** Server: plays an interaction clip (pick up, push a door) on every machine, through DefaultSlot. */
+	void PlayInteractAnim(UAnimSequenceBase* Anim);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastInteractAnim(UAnimSequenceBase* Anim);
+
+	/** The pick-up clip for an item lying HeightAboveFeet cm above this player's feet. */
+	UAnimSequenceBase* GetPickupAnim(float HeightAboveFeet) const;
+
+	/** Pick-up clips (MSHF, retargeted to UEFN): a standing reach-and-take, one picked at random. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
+	TArray<TObjectPtr<UAnimSequenceBase>> PickupAnims;
+
+	/** Door push clips by the side the door is on (ResidentHorrorV2). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
+	TObjectPtr<UAnimSequenceBase> DoorPushLeftAnim;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
+	TObjectPtr<UAnimSequenceBase> DoorPushRightAnim;
+
+	/** The finisher on a stunned enemy (Interact within FinisherRange, in front): a kick, and the enemy goes down. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact")
+	TObjectPtr<UAnimSequenceBase> FinisherAnim;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "50.0"))
+	float FinisherRange = 230.0f;
+
+	/** Seconds into the finisher clip at which the enemy is struck. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.0"))
+	float FinisherImpactTime = 0.9f;
+
+	/** The finisher clip is a paired move with a long tail; it is cut here (seconds), blending back out. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Interact", meta = (ClampMin = "0.1"))
+	float FinisherEndTime = 2.6f;
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastStopInteractAnim(float BlendOut);
+
+	/** A stunned enemy within reach and in front, or null. */
+	class AL2H_EnemyRobot* FindFinisherTarget() const;
+
+	UFUNCTION(Server, Reliable)
+	void ServerFinisher(class AL2H_EnemyRobot* Target);
+
+protected:
 
 	/** Plays a one-shot carry clip on every machine (the AnimBP's DefaultSlot). */
 	UFUNCTION(NetMulticast, Unreliable)

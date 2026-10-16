@@ -40,6 +40,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "L2H|Enemy")
 	float GetHealth() const { return Health; }
 
+	/** Server: stops chasing and attacking for Seconds (a melee hit). A stunned robot can be finished. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "L2H|Enemy")
+	void Stun(float Seconds);
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Enemy")
+	bool IsStunned() const { return bStunned; }
+
+	/** Server: the finisher. Dies at once and is thrown away from Attacker. */
+	void FinishBy(AActor* Attacker);
+
 	/** Fired on every machine when the robot swings, so a Blueprint child can add a sound or a flash. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "L2H|Enemy")
 	void OnAttack(AActor* Target);
@@ -76,6 +86,17 @@ protected:
 
 	UFUNCTION()
 	void OnRep_Dead();
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "L2H|Enemy")
+	bool bStunned = false;
+
+	float StunEndTime = 0.0f;
+
+	/** Every machine: the body rocks while stunned, so the opening to finish it reads at a glance. */
+	void UpdateStunLook();
+
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastThrow(FVector_NetQuantize Velocity);
 
 	UFUNCTION(NetMulticast, Unreliable)
 	void MulticastAttack(AActor* Target);

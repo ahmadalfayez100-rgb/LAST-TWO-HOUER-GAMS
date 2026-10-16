@@ -34,6 +34,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "L2H|Time")
 	void SetTimeSource(AL2H_BaseCharacter* InCharacter);
 
+	/** Shows an area's name across the top of this player's screen, fading in and out. */
+	UFUNCTION(BlueprintCallable, Category = "L2H|Time")
+	void ShowAreaName(const FText& Name);
+
 	/** Re-reads the attributes and the downed flag and repaints. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|Time")
 	void RefreshClock();
@@ -50,6 +54,10 @@ protected:
 	/** "-12 s" / "+15 s" next to the clock for a moment after any change bigger than the drain. */
 	UPROPERTY(BlueprintReadOnly, Category = "L2H|Time", meta = (BindWidgetOptional))
 	TObjectPtr<UTextBlock> DeltaText;
+
+	/** The area banner (see ShowAreaName). Created in code when the layout has none. */
+	UPROPERTY(BlueprintReadOnly, Category = "L2H|Time", meta = (BindWidgetOptional))
+	TObjectPtr<UTextBlock> AreaText;
 
 	/** Fired after every repaint, for Blueprint-side polish (animations, sounds). */
 	UFUNCTION(BlueprintImplementableEvent, Category = "L2H|Time")
@@ -116,6 +124,8 @@ private:
 	float NextWarningSoundAt = 0.0f;
 	FText WarningHubName;
 	float LastSeenTime = -1.0f;
+	float AreaShownAt = -1.0f;
+	float AreaSeconds = 3.0f;
 	float DeltaShownUntil = 0.0f;
 	float InfoRefreshIn = 0.0f;
 	void Unbind();
