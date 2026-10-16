@@ -19,6 +19,7 @@
 #include "World/L2H_AreaVolume.h"
 #include "World/L2H_Breakable.h"
 #include "World/L2H_ExplosiveBarrel.h"
+#include "World/L2H_HidingCloset.h"
 
 namespace
 {
@@ -134,6 +135,7 @@ void AL2H_TestCourse::BuildLocal()
 	AddLabel(Origin + FVector(1300.0f, -200.0f, 260.0f), TEXT("Robot"), 26.0f);
 	AddLabel(Origin + FVector(280.0f, -650.0f, 200.0f), TEXT("Crates: shoot or hit them"), 22.0f);
 	AddLabel(Origin + FVector(1000.0f, -220.0f, 220.0f), TEXT("Barrels: one shot, keep your distance"), 22.0f);
+	AddLabel(Origin + FVector(700.0f, 750.0f, 300.0f), TEXT("Closet: Triangle to hide, again to leave. Flashlight: L"), 20.0f);
 
 	AddLabel(Origin + FVector(-1350.0f, 650.0f, 260.0f),
 		TEXT("TEST COURSE: tiles = footsteps, door + items = Triangle, block = hook/climb/landing, robot = music & shards"), 20.0f);
@@ -201,6 +203,9 @@ void AL2H_TestCourse::SpawnReplicated()
 	UClass* ShardClass = LoadClass<AL2H_TimeShard>(nullptr, TEXT("/Game/L2HTime/Blueprints/BP_L2H_TimeShard.BP_L2H_TimeShard_C"));
 	World->SpawnActor<AL2H_TimeShard>(ShardClass ? ShardClass : AL2H_TimeShard::StaticClass(), Origin + FVector(-200.0f, -350.0f, 80.0f), FRotator::ZeroRotator, Params);
 	World->SpawnActor<AL2H_EnemyRobot>(AL2H_EnemyRobot::StaticClass(), Origin + FVector(1300.0f, -300.0f, 100.0f), FRotator(0.0f, 180.0f, 0.0f), Params);
+
+	// A closet to hide from the robot in, facing the open floor.
+	World->SpawnActor<AL2H_HidingCloset>(AL2H_HidingCloset::StaticClass(), Origin + FVector(700.0f, 750.0f, 0.0f), FRotator::ZeroRotator, Params);
 
 	L2HTime::LogImportant(TEXT("TestCourse: built beside the first PlayerStart (tiles, door, items, block, shard, robot)"));
 }

@@ -70,6 +70,19 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy", meta = (ClampMin = "0.1"))
 	float AttackInterval = 2.0f;
 
+	/** Seconds between committing to a swing and the blow landing: it stops and leans back, facing fixed, so a
+	 * step aside or a dodge (its i-frames) gets out of the way. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy", meta = (ClampMin = "0.0"))
+	float AttackWindup = 0.5f;
+
+	/** The blow reaches this far up or down (cm, centre to centre): a player on a block above it is out of reach. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy", meta = (ClampMin = "0.0"))
+	float AttackHeightReach = 100.0f;
+
+	/** The blow lands only on a target inside this cone ahead (cosine of the half-angle). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy", meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+	float AttackConeCos = 0.5f;
+
 	/** How far it notices a player. Beyond this it stands still. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy", meta = (ClampMin = "100.0"))
 	float SightRange = 2500.0f;
@@ -108,4 +121,15 @@ protected:
 	void ApplyDeathPhysics();
 
 	float NextAttackTime = 0.0f;
+
+	/** Server: a swing is wound up and lands at StrikeTime on whoever is then in front and in reach. */
+	bool bWindingUp = false;
+	float StrikeTime = 0.0f;
+	TWeakObjectPtr<AL2H_BaseCharacter> WindupTarget;
+	void Strike();
+
+	/** Every machine: the lean-back that telegraphs the swing. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastWindup(float Seconds);
+	float WindupLookUntil = -1.0f;
 };

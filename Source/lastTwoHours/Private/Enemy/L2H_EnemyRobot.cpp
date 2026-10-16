@@ -15,6 +15,7 @@
 #include "Time/L2H_LevelTimeConfig.h"
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
+#include "World/L2H_HidingCloset.h"
 
 AL2H_EnemyRobot::AL2H_EnemyRobot()
 {
@@ -87,7 +88,8 @@ AL2H_BaseCharacter* AL2H_EnemyRobot::FindTarget() const
 	{
 		// A body on the floor or on someone's shoulders is left alone: the robot goes for whoever can
 		// still fight back, which is also what keeps a revive from being an endless stun-lock.
-		if (!Candidate || Candidate->IsDowned() || Candidate->IsDead() || Candidate->IsBeingCarried())
+		if (!Candidate || Candidate->IsDowned() || Candidate->IsDead() || Candidate->IsBeingCarried()
+			|| AL2H_HidingCloset::IsHiding(Candidate))
 		{
 			continue;
 		}
@@ -121,6 +123,18 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 		{
 			bStunned = false;
 		}
+		bWindingUp = false;
+		return;
+	}
+
+	if (bWindingUp)
+	{
+		// Committed: no turning, no stepping. The blow lands where it was aimed, not where the player went.
+		const UWorld* WindWorld = GetWorld();
+		if (WindWorld && WindWorld->GetTimeSeconds() >= StrikeTime)
+		{
+			Strike();
+		}
 		return;
 	}
 
@@ -146,12 +160,51 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 
 	const UWorld* World = GetWorld();
 	const float Now = World ? World->GetTimeSeconds() : 0.0f;
-	if (Now < NextAttackTime || Distance > AttackRange)
+	if (Now < NextAttackTime || Distance > AttackRange || FMath::Abs(ToTarget.Z) > AttackHeightReach)
 	{
 		return;
 	}
 
-	NextAttackTime = Now + AttackInterval;
+	// The swing is announced first: it stops, leans back and trembles for AttackWindup seconds, and only then
+	// does the blow land -- on whoever is still in front of it, in reach and in sight. A step aside, a dodge
+	// (its i-frames), or a climb out of reach all get away from it.
+	NextAttackTime = Now + AttackWindup + AttackInterval;
+	bWindingUp = true;
+	StrikeTime = Now + AttackWindup;
+	WindupTarget = Target;
+	GetCharacterMovement()->StopMovementImmediately();
+	MulticastWindup(AttackWindup);
+}
+
+void AL2H_EnemyRobot::Strike()
+{
+	bWindingUp = false;
+	AL2H_BaseCharacter* Target = WindupTarget.Get();
+	WindupTarget.Reset();
+	UWorld* World = GetWorld();
+	if (!Target || !World || Target->IsDowned() || Target->IsDead() || AL2H_HidingCloset::IsHiding(Target))
+	{
+		return;
+	}
+
+	const FVector ToTarget = Target->GetActorLocation() - GetActorLocation();
+	const float Facing = FVector::DotProduct(GetActorForwardVector().GetSafeNormal2D(), ToTarget.GetSafeNormal2D());
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HEnemyStrike), false, this);
+	Params.AddIgnoredActor(Target);
+	const FVector Eye = GetActorLocation() + FVector(0.0f, 0.0f, 50.0f);
+	const bool bBlocked = World->LineTraceTestByChannel(Eye, Target->GetActorLocation(), ECC_Visibility, Params);
+
+	const bool bInReach = ToTarget.Size2D() <= AttackRange && FMath::Abs(ToTarget.Z) <= AttackHeightReach;
+	const bool bLands = bInReach && Facing >= AttackConeCos && !bBlocked;
+
+	MulticastAttack(Target);
+
+	if (!bLands)
+	{
+		L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s missed %s (dist %.0f, dz %.0f, facing %.2f, blocked %d)"),
+			*GetNameSafe(this), *GetNameSafe(Target), ToTarget.Size2D(), ToTarget.Z, Facing, bBlocked ? 1 : 0));
+		return;
+	}
 
 	// Through the director, like a bullet: invulnerability, the health layer and the time it costs all
 	// apply without the robot knowing about any of them.
@@ -159,18 +212,21 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 	{
 		Director->ApplyTimeDamage(Target, AttackDamage);
 	}
-
-	MulticastAttack(Target);
-
 	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s hit %s for %.0f"), *GetNameSafe(this), *GetNameSafe(Target), AttackDamage));
+}
+
+void AL2H_EnemyRobot::MulticastWindup_Implementation(float Seconds)
+{
+	const UWorld* World = GetWorld();
+	WindupLookUntil = World ? World->GetTimeSeconds() + Seconds : -1.0f;
 }
 
 void AL2H_EnemyRobot::MulticastAttack_Implementation(AActor* Target)
 {
-	// No attack clip ships with the pack, so the swing reads as a short lunge toward the target.
+	// No attack clip ships with the pack, so the swing reads as a short lunge along where it was aimed.
 	if (HasAuthority() && Target)
 	{
-		LaunchCharacter((Target->GetActorLocation() - GetActorLocation()).GetSafeNormal2D() * 300.0f + FVector(0.0f, 0.0f, 150.0f), true, true);
+		LaunchCharacter(GetActorForwardVector().GetSafeNormal2D() * 300.0f, true, false);
 	}
 
 	OnAttack(Target);
@@ -243,7 +299,12 @@ void AL2H_EnemyRobot::UpdateStunLook()
 {
 	// The mesh's authored rotation is (0, -90, 0); a stun rocks it about the forward axis.
 	const UWorld* World = GetWorld();
-	const float Rock = (bStunned && !bDead && World) ? FMath::Sin(World->GetTimeSeconds() * 14.0f) * 7.0f : 0.0f;
+	float Rock = (bStunned && !bDead && World) ? FMath::Sin(World->GetTimeSeconds() * 14.0f) * 7.0f : 0.0f;
+	// A swing on its way: leaning back and trembling until the blow.
+	if (World && !bDead && World->GetTimeSeconds() < WindupLookUntil)
+	{
+		Rock = -10.0f + FMath::Sin(World->GetTimeSeconds() * 60.0f) * 2.5f;
+	}
 	if (!bDead)
 	{
 		GetMesh()->SetRelativeRotation(FRotator(0.0f, -90.0f, Rock));
