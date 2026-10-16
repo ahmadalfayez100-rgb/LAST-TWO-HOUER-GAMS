@@ -78,6 +78,10 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 		return;
 	}
 
+	// The pipe upgrades like a gun: firepower levels raise every blow.
+	const UL2H_WeaponComponent* Weapons = Swinger->FindComponentByClass<UL2H_WeaponComponent>();
+	const float Damage = Weapons ? Weapons->GetDamageFor(Weapon) : Weapon->Data.Damage;
+
 	const FVector Centre = Swinger->GetActorLocation() + Swinger->GetActorForwardVector() * Reach;
 	TArray<FOverlapResult> Overlaps;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HMelee), false, Swinger);
@@ -93,7 +97,7 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 			continue;
 		}
 		Struck.Add(Enemy);
-		UGameplayStatics::ApplyDamage(Enemy, Weapon->Data.Damage, Swinger->GetController(), Swinger, nullptr);
+		UGameplayStatics::ApplyDamage(Enemy, Damage, Swinger->GetController(), Swinger, nullptr);
 		Enemy->Stun(Stun);
 	}
 
@@ -109,7 +113,7 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 		if (Prop && !Prop->IsBroken() && !Struck.Contains(Prop))
 		{
 			Struck.Add(Prop);
-			UGameplayStatics::ApplyDamage(Prop, Weapon->Data.Damage, Swinger->GetController(), Swinger, nullptr);
+			UGameplayStatics::ApplyDamage(Prop, Damage, Swinger->GetController(), Swinger, nullptr);
 		}
 	}
 
@@ -117,6 +121,6 @@ void UL2H_Ability_Melee::ApplyHit(AL2H_BaseCharacter* Swinger, const UL2H_Weapon
 	{
 		// The impact is felt on the swinger's camera too, lightly.
 		Swinger->PlayCameraShakeOnOwner(Swinger->HitCameraShake, 0.35f);
-		L2HTime::LogImportant(FString::Printf(TEXT("Melee: %s struck %d target(s) for %.0f"), *GetNameSafe(Swinger), Struck.Num(), Weapon->Data.Damage));
+		L2HTime::LogImportant(FString::Printf(TEXT("Melee: %s struck %d target(s) for %.0f"), *GetNameSafe(Swinger), Struck.Num(), Damage));
 	}
 }

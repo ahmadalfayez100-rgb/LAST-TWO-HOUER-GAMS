@@ -5,6 +5,7 @@
 #include "Components/ActorComponent.h"
 #include "CoreMinimal.h"
 #include "Templates/SubclassOf.h"
+#include "Weapon/L2H_WeaponUpgradeDataAsset.h"
 
 #include "L2H_WeaponComponent.generated.h"
 
@@ -69,6 +70,33 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
 	float GetReloadCost() const;
+
+	// ---------------------------------------------------------------------------------------------
+	// Upgrades (bought in a hub shop). The numbers below are the authored ones with the owner's levels applied;
+	// everything that reads a weapon's damage, magazine, rate or round price asks here.
+	// ---------------------------------------------------------------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
+	int32 GetUpgradeLevel(const UL2H_WeaponDataAsset* Weapon, EL2H_WeaponStat Stat) const;
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
+	float GetDamageFor(const UL2H_WeaponDataAsset* Weapon) const;
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
+	int32 GetClipSizeFor(const UL2H_WeaponDataAsset* Weapon) const;
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
+	float GetFireRateFor(const UL2H_WeaponDataAsset* Weapon) const;
+
+	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
+	bool HasWeapon(const UL2H_WeaponDataAsset* Weapon) const;
+
+	/** Server only: one level more of Upgrade's stat. False when it is already at its maximum. */
+	bool ServerRaiseUpgrade(const UL2H_WeaponUpgradeDataAsset* Upgrade);
+
+	/** For the save layer: every level held, and putting them back (a rewind, a load). */
+	const TArray<FL2H_WeaponUpgradeRecord>& GetUpgrades() const { return Upgrades; }
+	void RestoreUpgrades(const TArray<FL2H_WeaponUpgradeRecord>& InUpgrades);
 
 	/** True when something is held and it has a round to spend. The fire ability's single gate. */
 	UFUNCTION(BlueprintPure, Category = "L2H|Weapon")
@@ -168,6 +196,25 @@ protected:
 	 * switch used to refill the magazine for nothing, which made the reload price avoidable.
 	 */
 	TArray<int32> StoredClips;
+
+	/** Per level: +20% damage, +25% magazine (at least one round), +15% rate, -20% seconds per round. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Weapon|Upgrade")
+	float FirepowerPerLevel = 0.2f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Weapon|Upgrade")
+	float CapacityPerLevel = 0.25f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Weapon|Upgrade")
+	float FireRatePerLevel = 0.15f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Weapon|Upgrade")
+	float RoundPricePerLevel = 0.2f;
+
+	UPROPERTY(ReplicatedUsing = OnRep_Upgrades, BlueprintReadOnly, Category = "L2H|Weapon")
+	TArray<FL2H_WeaponUpgradeRecord> Upgrades;
+
+	UFUNCTION()
+	void OnRep_Upgrades();
 
 	/** Price per round for the active weapon after the hub scale, and the rounds missing. */
 	float GetRoundPrice() const;

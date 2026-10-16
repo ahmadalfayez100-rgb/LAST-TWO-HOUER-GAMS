@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
 #include "Item/L2H_ItemTypes.h"
+#include "Weapon/L2H_WeaponUpgradeDataAsset.h"
 
 #include "L2H_SaveGame.generated.h"
 
@@ -47,6 +48,10 @@ struct FL2H_SavedPlayer
 	/** The last hub whose stage this player finished, so the clock knows which hub is next after a rewind. */
 	UPROPERTY(BlueprintReadOnly, Category = "L2H|Save")
 	FName LastHubId;
+
+	/** Weapon upgrade levels as they were here. Bought after this checkpoint, they go with a rewind (and the bank comes back). */
+	UPROPERTY(BlueprintReadOnly, Category = "L2H|Save")
+	TArray<FL2H_WeaponUpgradeRecord> WeaponUpgrades;
 };
 
 /**

@@ -51,6 +51,7 @@ void UL2H_WeaponComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>&
 	DOREPLIFETIME(UL2H_WeaponComponent, AmmoInClip);
 	DOREPLIFETIME(UL2H_WeaponComponent, bAiming);
 	DOREPLIFETIME(UL2H_WeaponComponent, Loadout);
+	DOREPLIFETIME(UL2H_WeaponComponent, Upgrades);
 }
 
 UL2H_WeaponDataAsset* UL2H_WeaponComponent::GetActiveWeaponData() const
@@ -75,7 +76,7 @@ bool UL2H_WeaponComponent::CanFire() const
 	}
 
 	// ClipSize 0 is the pipe: a weapon with no magazine is never out of ammunition.
-	return Data->Data.ClipSize <= 0 || AmmoInClip > 0;
+	return GetClipSizeFor(Data) <= 0 || AmmoInClip > 0;
 }
 
 AL2H_WeaponActor* UL2H_WeaponComponent::ResolveWeaponActor(int32 Index)
@@ -176,7 +177,7 @@ bool UL2H_WeaponComponent::ServerSelectWeapon(int32 Index)
 	ActiveWeapon = Selected;
 	Selected->SetEquipped(true);
 
-	const int32 FullClip = Loadout[Index] ? Loadout[Index]->Data.ClipSize : 0;
+	const int32 FullClip = GetClipSizeFor(Loadout[Index]);
 	AmmoInClip = StoredClips[Index] >= 0 ? StoredClips[Index] : FullClip;
 	StoredClips[Index] = AmmoInClip;
 
@@ -268,14 +269,14 @@ bool UL2H_WeaponComponent::RefillClip(bool bFree)
 		return false;
 	}
 
-	if (AmmoInClip >= Data->Data.ClipSize)
+	if (AmmoInClip >= GetClipSizeFor(Data))
 	{
 		return false;
 	}
 
 	// Rounds are bought with the clock. Never so many that the purchase itself would end the player: a
 	// reload buys what the clock can pay for while leaving at least a second, and nothing when it cannot.
-	int32 Rounds = Data->Data.ClipSize - AmmoInClip;
+	int32 Rounds = GetClipSizeFor(Data) - AmmoInClip;
 	const float Price = bFree ? 0.0f : GetRoundPrice();
 
 	// A prepaid magazine in the bag is spent before the clock. It comes back through the bag's use path
@@ -334,6 +335,7 @@ float UL2H_WeaponComponent::GetRoundPrice() const
 	}
 
 	float Price = FMath::Max(Data->Data.SecondsPerRound, 0.0f);
+	Price *= FMath::Max(1.0f - RoundPricePerLevel * GetUpgradeLevel(Data, EL2H_WeaponStat::RoundPrice), 0.0f);
 
 	// A hub is the rest stop: reloading there is cheap (free by default), which is one more reason to plan
 	// the next stage while standing in one.
@@ -353,7 +355,7 @@ float UL2H_WeaponComponent::GetReloadCost() const
 	{
 		return 0.0f;
 	}
-	return FMath::Max(Data->Data.ClipSize - AmmoInClip, 0) * GetRoundPrice();
+	return FMath::Max(GetClipSizeFor(Data) - AmmoInClip, 0) * GetRoundPrice();
 }
 
 void UL2H_WeaponComponent::ServerSetAiming(bool bNewAiming)
@@ -474,4 +476,100 @@ void UL2H_WeaponComponent::ServerAddWeapon(UL2H_WeaponDataAsset* Data)
 	}
 	L2HTime::LogImportant(FString::Printf(TEXT("Weapon %s: picked up %s (loadout %d)"),
 		*GetNameSafe(GetOwner()), *GetNameSafe(Data), Loadout.Num()));
+}
+
+// -------------------------------------------------------------------------------------------------
+// Upgrades
+// -------------------------------------------------------------------------------------------------
+
+bool UL2H_WeaponComponent::HasWeapon(const UL2H_WeaponDataAsset* Weapon) const
+{
+	return Weapon && Loadout.ContainsByPredicate([Weapon](const TObjectPtr<UL2H_WeaponDataAsset>& Entry) { return Entry.Get() == Weapon; });
+}
+
+int32 UL2H_WeaponComponent::GetUpgradeLevel(const UL2H_WeaponDataAsset* Weapon, EL2H_WeaponStat Stat) const
+{
+	if (!Weapon)
+	{
+		return 0;
+	}
+	const FL2H_WeaponUpgradeRecord* Record = Upgrades.FindByPredicate([Weapon](const FL2H_WeaponUpgradeRecord& Entry) { return Entry.Weapon.Get() == Weapon; });
+	return Record ? Record->GetLevel(Stat) : 0;
+}
+
+float UL2H_WeaponComponent::GetDamageFor(const UL2H_WeaponDataAsset* Weapon) const
+{
+	return Weapon ? Weapon->Data.Damage * (1.0f + FirepowerPerLevel * GetUpgradeLevel(Weapon, EL2H_WeaponStat::Firepower)) : 0.0f;
+}
+
+int32 UL2H_WeaponComponent::GetClipSizeFor(const UL2H_WeaponDataAsset* Weapon) const
+{
+	const int32 Authored = Weapon ? Weapon->Data.ClipSize : 0;
+	if (Authored <= 0)
+	{
+		// No magazine (the pipe) stays without one.
+		return Authored;
+	}
+	const int32 PerLevel = FMath::Max(1, FMath::RoundToInt(Authored * CapacityPerLevel));
+	return Authored + PerLevel * GetUpgradeLevel(Weapon, EL2H_WeaponStat::Capacity);
+}
+
+float UL2H_WeaponComponent::GetFireRateFor(const UL2H_WeaponDataAsset* Weapon) const
+{
+	return Weapon ? Weapon->Data.FireRate * (1.0f + FireRatePerLevel * GetUpgradeLevel(Weapon, EL2H_WeaponStat::FireRate)) : 0.0f;
+}
+
+bool UL2H_WeaponComponent::ServerRaiseUpgrade(const UL2H_WeaponUpgradeDataAsset* Upgrade)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !Upgrade || !Upgrade->Weapon || Upgrade->Stat == EL2H_WeaponStat::Count)
+	{
+		return false;
+	}
+	const int32 StatIndex = static_cast<int32>(Upgrade->Stat);
+	FL2H_WeaponUpgradeRecord* Record = Upgrades.FindByPredicate([Upgrade](const FL2H_WeaponUpgradeRecord& Entry) { return Entry.Weapon == Upgrade->Weapon; });
+	if (!Record)
+	{
+		Record = &Upgrades.AddDefaulted_GetRef();
+		Record->Weapon = Upgrade->Weapon;
+	}
+	if (Record->Levels.Num() <= StatIndex)
+	{
+		Record->Levels.SetNumZeroed(static_cast<int32>(EL2H_WeaponStat::Count));
+	}
+	if (Record->Levels[StatIndex] >= Upgrade->MaxLevel)
+	{
+		return false;
+	}
+	++Record->Levels[StatIndex];
+	OnRep_Upgrades();
+	return true;
+}
+
+void UL2H_WeaponComponent::RestoreUpgrades(const TArray<FL2H_WeaponUpgradeRecord>& InUpgrades)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+	Upgrades = InUpgrades;
+	// A magazine bigger than the restored capacity would keep rounds the rewind took the upgrade back from.
+	if (const UL2H_WeaponDataAsset* Data = GetActiveWeaponData(); Data && GetClipSizeFor(Data) > 0 && AmmoInClip > GetClipSizeFor(Data))
+	{
+		AmmoInClip = GetClipSizeFor(Data);
+		OnRep_AmmoInClip();
+	}
+	for (int32 Index = 0; Index < StoredClips.Num() && Index < Loadout.Num(); ++Index)
+	{
+		const int32 Full = GetClipSizeFor(Loadout[Index]);
+		if (Full > 0 && StoredClips[Index] > Full)
+		{
+			StoredClips[Index] = Full;
+		}
+	}
+	OnRep_Upgrades();
+}
+
+void UL2H_WeaponComponent::OnRep_Upgrades()
+{
+	OnWeaponChanged.Broadcast();
 }

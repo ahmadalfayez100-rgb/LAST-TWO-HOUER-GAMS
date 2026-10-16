@@ -13,6 +13,7 @@
 #include "Time/L2HTimeLog.h"
 #include "World/L2H_CheckpointTerminal.h"
 #include "World/L2H_ReviveStation.h"
+#include "Weapon/L2H_WeaponComponent.h"
 
 namespace
 {
@@ -171,6 +172,10 @@ bool UL2H_SaveSubsystem::CapturePlayers(FL2H_CheckpointRecord& Record)
 		Saved.bDowned = Pawn->IsDowned();
 		Saved.Chrons = Pawn->GetChrons();
 		Saved.LastHubId = Pawn->GetLastHubId();
+		if (const UL2H_WeaponComponent* Weapons = Pawn->FindComponentByClass<UL2H_WeaponComponent>())
+		{
+			Saved.WeaponUpgrades = Weapons->GetUpgrades();
+		}
 		Saved.Health = AL2H_TimeDirector::GetHealthFor(Pawn);
 		if (const UL2H_InventoryComponent* Bag = Pawn->FindComponentByClass<UL2H_InventoryComponent>())
 		{
@@ -668,6 +673,10 @@ bool UL2H_SaveSubsystem::ApplyRecord(const UObject* WorldContextObject, const FL
 		Pawn->SetChrons(Saved.Chrons);
 		Pawn->SetLastHubId(Saved.LastHubId);
 		Pawn->CloseHubBank();
+		if (UL2H_WeaponComponent* Weapons = Pawn->FindComponentByClass<UL2H_WeaponComponent>())
+		{
+			Weapons->RestoreUpgrades(Saved.WeaponUpgrades);
+		}
 
 		if (Saved.bDowned != Pawn->IsDowned())
 		{

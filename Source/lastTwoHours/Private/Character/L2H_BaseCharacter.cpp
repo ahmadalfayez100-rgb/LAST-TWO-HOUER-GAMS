@@ -1119,13 +1119,14 @@ void AL2H_BaseCharacter::Input_AbilityHeld(const FInputActionValue& Value, FGame
 
 	const UL2H_WeaponComponent* Weapons = FindComponentByClass<UL2H_WeaponComponent>();
 	const UL2H_WeaponDataAsset* Data = Weapons ? Weapons->GetActiveWeaponData() : nullptr;
-	if (!Data || !Data->Data.bAutomatic || Data->Data.FireRate <= 0.0f || IsCarrying())
+	const float FireRate = Weapons ? Weapons->GetFireRateFor(Data) : 0.0f;
+	if (!Data || !Data->Data.bAutomatic || FireRate <= 0.0f || IsCarrying())
 	{
 		return;
 	}
 
 	const float Now = GetWorld()->GetTimeSeconds();
-	if (Now - LastAutoFireRequest >= 1.0f / Data->Data.FireRate)
+	if (Now - LastAutoFireRequest >= 1.0f / FireRate)
 	{
 		LastAutoFireRequest = Now;
 		ServerTryActivateAbilityByTag(AbilityTag);
@@ -3334,9 +3335,12 @@ TArray<AL2H_BaseCharacter::ETimeQuickOption> AL2H_BaseCharacter::GetTimeQuickOpt
 				break;
 			}
 		}
+		// Upgrades are listed only for the weapons this player carries.
+		const UL2H_WeaponComponent* ShopWeapons = FindComponentByClass<UL2H_WeaponComponent>();
 		for (int32 Index = 0; Index < Config->ShopItems.Num(); ++Index)
 		{
-			if (Config->ShopItems[Index])
+			const UL2H_WeaponUpgradeDataAsset* Upgrade = Cast<UL2H_WeaponUpgradeDataAsset>(Config->ShopItems[Index]);
+			if (Config->ShopItems[Index] && (!Upgrade || (ShopWeapons && ShopWeapons->HasWeapon(Upgrade->Weapon))))
 			{
 				Options.Add(ETimeQuickOption::Buy);
 				TimeQuickArgs.Add(Index);
@@ -3451,10 +3455,15 @@ void AL2H_BaseCharacter::ConfirmTimeQuickMenu()
 		const int32 Index = TimeQuickArgs.IsValidIndex(TimeQuickSelection) ? TimeQuickArgs[TimeQuickSelection] : -1;
 		const UL2H_LevelTimeConfig* ShopConfig = AL2H_TimeDirector::GetLevelConfig(this);
 		const UL2H_ItemDataAsset* Item = (ShopConfig && ShopConfig->ShopItems.IsValidIndex(Index)) ? ShopConfig->ShopItems[Index].Get() : nullptr;
-		if (Item && Chrons < Item->Data.Price)
+		const int32 Price = UL2H_WeaponUpgradeDataAsset::GetShopPrice(this, Item);
+		if (Item && Price < 0)
+		{
+			TimeQuickStatus = NSLOCTEXT("L2HTimeQuickMenu", "UpgradeMax", "Already at the top level.");
+		}
+		else if (Item && Chrons < Price)
 		{
 			TimeQuickStatus = FText::Format(NSLOCTEXT("L2HTimeQuickMenu", "BankShort", "Not enough in the bank ({0} of {1}). The bank fills when a stage ends at a hub."),
-				FText::AsNumber(FMath::RoundToInt(Chrons)), FText::AsNumber(Item->Data.Price));
+				FText::AsNumber(FMath::RoundToInt(Chrons)), FText::AsNumber(Price));
 		}
 		else
 		{
@@ -3513,7 +3522,8 @@ void AL2H_BaseCharacter::RefreshTimeQuickMenu()
 			if (Config && Config->ShopItems.IsValidIndex(Arg) && Config->ShopItems[Arg])
 			{
 				Rows.Add(FText::Format(NSLOCTEXT("L2HTimeQuickMenu", "Buy", "Buy {0} -- {1} (bank {2})"),
-					Config->ShopItems[Arg]->Data.DisplayName, FText::AsNumber(Config->ShopItems[Arg]->Data.Price),
+					UL2H_WeaponUpgradeDataAsset::GetShopName(this, Config->ShopItems[Arg]),
+					FText::AsNumber(FMath::Max(UL2H_WeaponUpgradeDataAsset::GetShopPrice(this, Config->ShopItems[Arg]), 0)),
 					FText::AsNumber(FMath::RoundToInt(Chrons))));
 			}
 			else

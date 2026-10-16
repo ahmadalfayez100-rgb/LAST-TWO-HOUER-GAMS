@@ -423,12 +423,24 @@ bool AL2H_TimeDirector::BuyShopItem(AL2H_BaseCharacter* Buyer, int32 Index)
 	const UL2H_ItemDataAsset* Item = Config->ShopItems[Index];
 	UL2H_InventoryComponent* Bag = Buyer->FindComponentByClass<UL2H_InventoryComponent>();
 	const AL2H_CheckpointTerminal* Hub = Buyer->GetCurrentTerminal();
-	const float Price = Item ? static_cast<float>(Item->Data.Price) : 0.0f;
+	const float Price = static_cast<float>(UL2H_WeaponUpgradeDataAsset::GetShopPrice(Buyer, Item));
+
+	// A weapon upgrade is paid the same way but never enters the bag: it raises the buyer's level.
+	const UL2H_WeaponUpgradeDataAsset* Upgrade = Cast<UL2H_WeaponUpgradeDataAsset>(Item);
+	UL2H_WeaponComponent* Weapons = Buyer->FindComponentByClass<UL2H_WeaponComponent>();
 
 	const TCHAR* Refusal = nullptr;
-	if (!Item || !Bag)
+	if (!Item || (!Bag && !Upgrade))
 	{
 		Refusal = TEXT("nothing to sell, or no bag to put it in");
+	}
+	else if (Upgrade && (!Weapons || !Weapons->HasWeapon(Upgrade->Weapon)))
+	{
+		Refusal = TEXT("that weapon is not in the loadout");
+	}
+	else if (Upgrade && Price < 0.0f)
+	{
+		Refusal = TEXT("already at the top level");
 	}
 	else if (!Hub || !Hub->SavesOnArrival())
 	{
@@ -438,7 +450,7 @@ bool AL2H_TimeDirector::BuyShopItem(AL2H_BaseCharacter* Buyer, int32 Index)
 	{
 		Refusal = TEXT("the bank is short");
 	}
-	else if (!Bag->CanAccept(Item, 1))
+	else if (!Upgrade && !Bag->CanAccept(Item, 1))
 	{
 		Refusal = TEXT("the bag is full");
 	}
@@ -450,7 +462,14 @@ bool AL2H_TimeDirector::BuyShopItem(AL2H_BaseCharacter* Buyer, int32 Index)
 	}
 
 	Buyer->AddChrons(-Price);
-	Bag->ServerAddItem(Item, 1);
+	if (Upgrade)
+	{
+		Weapons->ServerRaiseUpgrade(Upgrade);
+	}
+	else
+	{
+		Bag->ServerAddItem(Item, 1);
+	}
 
 	// The purchase is part of what the hub's record holds: a death in the next stage returns the players
 	// here with what they bought and the bank as it stood after paying.
@@ -1953,6 +1972,10 @@ void AL2H_TimeDirector::ResetPawn(AL2H_BaseCharacter* Character)
 	// A full restart has no checkpoint to keep a bank from: it starts from nothing, like the clock does.
 	Character->SetChrons(0.0f);
 	Character->CloseHubBank();
+	if (UL2H_WeaponComponent* Weapons = Character->FindComponentByClass<UL2H_WeaponComponent>())
+	{
+		Weapons->RestoreUpgrades({});
+	}
 
 	ASC->SetNumericAttributeBase(UL2H_TimeAttributeSet::GetTimeAttribute(),
 		Config ? Config->StartingTime : TimeSet->GetMaxTime());

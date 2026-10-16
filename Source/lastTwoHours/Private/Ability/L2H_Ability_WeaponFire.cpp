@@ -119,10 +119,11 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 	// The weapon's FireRate is a ceiling on shots per second. It was declared and never read, so a pistol
 	// (5/s) and a shotgun (1.2/s) fired as fast as the button could be pressed. Held automatic fire is
 	// requested every frame and relies on this to come out at the authored rate.
-	if (!bIsTool && ActiveData && ActiveData->Data.FireRate > 0.0f && GetWorld())
+	const float FireRate = Weapons->GetFireRateFor(ActiveData);
+	if (!bIsTool && ActiveData && FireRate > 0.0f && GetWorld())
 	{
 		const float Now = GetWorld()->GetTimeSeconds();
-		if (Now - LastShotTime < 1.0f / ActiveData->Data.FireRate - 0.005f)
+		if (Now - LastShotTime < 1.0f / FireRate - 0.005f)
 		{
 			Finish(false);
 			return;
@@ -222,7 +223,7 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 		if (AL2H_Projectile* Round = World->SpawnActor<AL2H_Projectile>(
 			WeaponData->Data.ProjectileClass, MuzzleLocation, LaunchDirection.Rotation(), SpawnParams))
 		{
-			Round->InitShot(Character, WeaponData->Data.Damage, WeaponData->Data.DamageType, HeadshotMultiplier,
+			Round->InitShot(Character, Weapons->GetDamageFor(WeaponData), WeaponData->Data.DamageType, HeadshotMultiplier,
 				LaunchDirection, WeaponData->Data.ProjectileSpeed);
 		}
 
@@ -252,7 +253,9 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 	// Falling back to the weapon's own numbers keeps an un-authored target hittable rather than immune.
 	const float BaseDamage = Response ? Response->TimeDamage : WeaponData->Data.Damage;
 	const float Multiplier = Response ? Response->HeadshotMultiplier : HeadshotMultiplier;
-	const float DamageToApply = BaseDamage * (bHeadshot ? Multiplier : 1.0f);
+	// Upgrades scale whatever the base was, the target's own response included.
+	const float Firepower = WeaponData->Data.Damage > 0.0f ? Weapons->GetDamageFor(WeaponData) / WeaponData->Data.Damage : 1.0f;
+	const float DamageToApply = BaseDamage * Firepower * (bHeadshot ? Multiplier : 1.0f);
 
 	// The engine's own damage path as well as the director's: anything with its own TakeDamage -- the
 	// test robot, a breakable -- hears the hit without the weapon having to know what it is.
