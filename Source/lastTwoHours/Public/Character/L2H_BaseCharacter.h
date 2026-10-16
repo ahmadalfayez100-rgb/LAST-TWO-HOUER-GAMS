@@ -77,6 +77,9 @@ class LASTTWOHOURS_API AL2H_BaseCharacter : public ACharacter, public IAbilitySy
 {
 	GENERATED_BODY()
 
+	// The clock-face time menu acts through the same server calls the old list did.
+	friend class UL2H_TimeMenuComponent;
+
 public:
 	AL2H_BaseCharacter();
 

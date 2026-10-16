@@ -80,6 +80,9 @@ public:
 	/** The centre shows this actor's time left instead of the time of day. */
 	void SetTimeSource(AActor* InSource) { TimeSource = InSource; }
 
+	/** A line under the clock for a few seconds: what the last choice did, or why it was refused. */
+	void SetStatus(const FText& InStatus, float Seconds = 3.5f);
+
 	/** Dims the world behind the dial (the main menu has nothing else to show). */
 	void SetBackdropOpacity(float InOpacity) { BackdropOpacity = InOpacity; }
 
@@ -166,4 +169,6 @@ private:
 	FVector2D LastMouse = FVector2D(-1.0f);
 
 	TWeakObjectPtr<AActor> TimeSource;
+	FText Status;
+	float StatusUntil = 0.0f;
 };

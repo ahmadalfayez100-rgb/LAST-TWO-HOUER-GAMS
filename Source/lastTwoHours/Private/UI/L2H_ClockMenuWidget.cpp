@@ -153,6 +153,12 @@ void UL2H_ClockMenuWidget::ShowPage(const FL2H_ClockPage& Page, bool bForward)
 	HourToDeg = HourDeg + (bForward ? 60.0f : -60.0f);
 }
 
+void UL2H_ClockMenuWidget::SetStatus(const FText& InStatus, float Seconds)
+{
+	Status = InStatus;
+	StatusUntil = GetWorld() ? GetWorld()->GetRealTimeSeconds() + Seconds : 0.0f;
+}
+
 void UL2H_ClockMenuWidget::RefreshPage(const FL2H_ClockPage& Page)
 {
 	Current = Page;
@@ -459,6 +465,13 @@ int32 UL2H_ClockMenuWidget::NativePaint(const FPaintArgs& Args, const FGeometry&
 	L2HClock::Text(OutDrawElements, Layer + 1, AllottedGeometry, Digital, FVector2f(Centre.X, Centre.Y + Radius * 0.24f),
 		FCoreStyle::GetDefaultFontStyle("Bold", FMath::Clamp(FMath::RoundToInt(Radius * 0.1f), 14, 40)), DigitalColour);
 	
+
+	// The status line, under the dial while it lasts.
+	if (!Status.IsEmpty() && GetWorld() && GetWorld()->GetRealTimeSeconds() < StatusUntil)
+	{
+		L2HClock::Text(OutDrawElements, Layer + 1, AllottedGeometry, Status, FVector2f(Centre.X, Centre.Y + Radius * 1.2f),
+			FCoreStyle::GetDefaultFontStyle("Bold", FMath::Clamp(FMath::RoundToInt(Radius * 0.055f), 11, 20)), FLinearColor(1.0f, 0.9f, 0.6f, 1.0f));
+	}
 
 	return Layer + 2;
 }

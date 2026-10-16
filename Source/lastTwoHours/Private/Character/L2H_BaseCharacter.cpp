@@ -63,6 +63,7 @@
 #include "Character/L2H_FlashlightComponent.h"
 #include "Character/L2H_StruggleComponent.h"
 #include "Character/L2H_PauseMenuComponent.h"
+#include "Character/L2H_TimeMenuComponent.h"
 
 AL2H_BaseCharacter::AL2H_BaseCharacter()
 {
@@ -222,6 +223,8 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 	CreateDefaultSubobject<UL2H_StruggleComponent>(TEXT("L2H_Struggle"));
 	// The in-game clock menu (Options / P). It binds its own key too.
 	CreateDefaultSubobject<UL2H_PauseMenuComponent>(TEXT("L2H_PauseMenu"));
+	// The time menu on the clock face (D-pad Left, and the terminal's menu).
+	CreateDefaultSubobject<UL2H_TimeMenuComponent>(TEXT("L2H_TimeMenu"));
 	CoverAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Crouch.IA_Crouch"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	// Mapped only by IMC_L2H_Cover, which the cover component adds while in cover over the Blueprint's input.
 	CoverJumpAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/L2HTime/Input/IA_L2H_CoverCross.IA_L2H_CoverCross"), nullptr, LOAD_NoWarn | LOAD_Quiet);
@@ -3267,6 +3270,13 @@ void AL2H_BaseCharacter::ToggleTimeQuickMenu()
 		return;
 	}
 
+	// The clock-face menu when the pawn has it; the list below is the fallback.
+	if (UL2H_TimeMenuComponent* ClockMenu = FindComponentByClass<UL2H_TimeMenuComponent>())
+	{
+		ClockMenu->Toggle();
+		return;
+	}
+
 	APlayerController* PC = Cast<APlayerController>(GetController());
 	UEnhancedInputLocalPlayerSubsystem* InputSubsystem = (PC && PC->GetLocalPlayer())
 		? ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer())
@@ -3634,6 +3644,12 @@ bool AL2H_BaseCharacter::TryOpenTerminalMenu()
 			TEXT("Menu: refused -- %s does not offer the menu"),
 			*GetNameSafe(CurrentTerminal)));
 		return false;
+	}
+
+	// The clock-face menu opens on the terminal's face when the pawn has it.
+	if (UL2H_TimeMenuComponent* ClockMenu = FindComponentByClass<UL2H_TimeMenuComponent>())
+	{
+		return ClockMenu->Open();
 	}
 
 	if (!TerminalMenuClass)
