@@ -48,6 +48,7 @@ void UL2H_InventoryComponent::BeginPlay()
 
 void UL2H_InventoryComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CloseClockBag();
 	CloseInventoryUI();
 	Super::EndPlay(EndPlayReason);
 }
@@ -701,6 +702,20 @@ void UL2H_InventoryComponent::RequestTransferFromStorage(AL2H_StorageActor* Stor
 
 void UL2H_InventoryComponent::ToggleInventoryUI()
 {
+	// The bag on the clock face, like every other menu.
+	if (bClockBag)
+	{
+		if (ClockBag)
+		{
+			CloseClockBag();
+		}
+		else
+		{
+			OpenClockBag();
+		}
+		return;
+	}
+
 	if (InventoryWidget)
 	{
 		CloseInventoryUI();
@@ -740,6 +755,7 @@ void UL2H_InventoryComponent::ToggleInventoryUI()
 
 void UL2H_InventoryComponent::CloseInventoryUI()
 {
+	CloseClockBag();
 	if (!InventoryWidget)
 	{
 		return;

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Components/ActorComponent.h"
+#include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Item/L2H_ItemTypes.h"
 
@@ -10,6 +11,8 @@
 
 class AL2H_StorageActor;
 class UL2H_InventoryWidget;
+class UL2H_ClockMenuWidget;
+struct FL2H_ClockPage;
 class UL2H_ItemDataAsset;
 
 /**
@@ -188,6 +191,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "L2H|Inventory")
 	UL2H_InventoryWidget* GetInventoryWidget() const { return InventoryWidget; }
 
+	/** The bag on the clock face, while it is open. */
+	UL2H_ClockMenuWidget* GetClockBag() const { return ClockBag; }
+
 protected:
 	UFUNCTION()
 	void OnRep_Slots();
@@ -277,4 +283,27 @@ protected:
 	/** Local to this player's screen; never replicated. */
 	UPROPERTY(Transient)
 	TObjectPtr<UL2H_InventoryWidget> InventoryWidget;
+
+	// ---------------------------------------------------------------------------------------------
+	// The bag on the clock face (L2H_InventoryClockMenu.cpp). Its twelve cells sit at the twelve hours;
+	// choosing one opens its face (use, shortcut, combine, drop). The grid widget stays as the fallback.
+	// ---------------------------------------------------------------------------------------------
+
+	/** Open the bag on the clock face rather than the grid widget. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Inventory")
+	bool bClockBag = true;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UL2H_ClockMenuWidget> ClockBag;
+
+	TArray<FName> ClockBagStack;
+	float ClockBagNextRefresh = 0.0f;
+	FTSTicker::FDelegateHandle ClockBagTicker;
+
+	void OpenClockBag();
+	void CloseClockBag();
+	bool TickClockBag(float DeltaTime);
+	FL2H_ClockPage BuildBagPage(FName PageId) const;
+	void OnClockBagChosen(FName Id);
+	void OnClockBagBack();
 };

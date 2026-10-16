@@ -272,7 +272,7 @@ FReply UL2H_ClockMenuWidget::NativeOnKeyDown(const FGeometry& InGeometry, const 
 		return FReply::Handled();
 	}
 	if (Key == EKeys::Gamepad_FaceButton_Right || Key == EKeys::Escape || Key == EKeys::BackSpace || Key == EKeys::Virtual_Back
-		|| Key == EKeys::Gamepad_Special_Right || Key == EKeys::P)
+		|| Key == EKeys::Gamepad_Special_Right || Key == EKeys::P || Key == EKeys::Gamepad_Special_Left || Key == EKeys::I || Key == EKeys::Tab)
 	{
 		Back();
 		return FReply::Handled();
