@@ -38,13 +38,31 @@ public:
 	 * ContactLocation is the world point that was touched and is what the surface is resolved from.
 	 * Pass FVector::ZeroVector for a moment with no contact point -- a jump, an ability -- and the
 	 * character's own position is probed instead.
+	 *
+	 * ScaleMultiplier multiplies the row's own Scale on the spawned component, which is how a caller that
+	 * knows the real size of what it is showing -- a Time Bend arena, say -- makes the effect that size
+	 * instead of the size the row was authored at.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
-	bool PlayMomentVFX(EL2H_VFXMoment Moment, FName SocketOverride = NAME_None, FVector ContactLocation = FVector::ZeroVector);
+	bool PlayMomentVFX(EL2H_VFXMoment Moment, FName SocketOverride = NAME_None, FVector ContactLocation = FVector::ZeroVector, float ScaleMultiplier = 1.0f);
+
+	/**
+	 * Takes down every live effect this component spawned for a moment, on this machine.
+	 *
+	 * A row is fire-and-forget by design, which is right for a footstep and wrong for an effect that
+	 * has to last exactly as long as the ability that raised it -- a Time Bend arena that outlived its
+	 * slow would be drawing a bubble over a world that had already sped back up. Returns how many
+	 * components were taken down.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
+	int32 StopMomentVFX(EL2H_VFXMoment Moment);
 
 	/** The surface under a point, or SurfaceType_Default when nothing was hit. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
 	EPhysicalSurface ResolveSurface(FVector ContactLocation) const;
+
+	/** The moment's live list, or null when nothing of that moment is running. */
+	TArray<TWeakObjectPtr<UNiagaraComponent>>* FindLiveComponents(EL2H_VFXMoment Moment);
 
 	/** Swaps this pawn's identity. Clears the throttle so the new look does not start muted. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
@@ -114,6 +132,14 @@ private:
 	UPROPERTY(Transient)
 	TSet<EL2H_VFXMoment> ReportedMissing;
 
+	/**
+	 * The components this component has spawned and not yet taken down, per moment.
+	 *
+	 * Weak, so a one-shot row that destroys itself simply drops out instead of pinning a dead
+	 * component alive; only the moments an ability explicitly ends are ever walked.
+	 */
+	TMap<EL2H_VFXMoment, TArray<TWeakObjectPtr<UNiagaraComponent>>> LiveComponents;
+
 	/** Ground travelled since the last footstep effect. */
 	float DistanceSinceStep = 0.0f;
 
@@ -122,7 +148,7 @@ private:
 
 	const FL2H_VFXEntry* ResolveEntry(EL2H_VFXMoment Moment, EPhysicalSurface Surface);
 
-	UNiagaraComponent* SpawnEntry(const FL2H_VFXEntry& Entry, FName Socket, FVector ContactLocation);
+	UNiagaraComponent* SpawnEntry(const FL2H_VFXEntry& Entry, FName Socket, FVector ContactLocation, float ScaleMultiplier);
 
 	void UpdateFootsteps(float DeltaTime);
 

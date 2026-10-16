@@ -12,12 +12,17 @@
 class AL2H_TimeBall;
 
 /**
- * Samer's fixed super ability: throw an orb, then travel to it.
+ * Samer's fixed super ability: take the orb out, then commit to where it is.
  *
- * The ability is deliberately short-lived. It decides, pays the flat cost, spawns the ball and ends;
- * the ball then owns the flight and the resolution. That is what makes a second press read as "do
- * something about the ball that is out" -- recall it, or teleport to it now -- instead of as a second
- * throw, and it keeps the ability free of any long-running waiting state.
+ * The ability is deliberately short-lived. It decides, pays the flat cost, spawns the orb and ends; the
+ * orb then waits in the hand for the launch button -- which is what makes the throw aimable -- and owns
+ * the flight and the resolution after that. A second press is therefore a decision about the orb that is
+ * already out: put it away, recall it, or teleport to it now. It is never a second throw, and the ability
+ * stays free of any long-running waiting state.
+ *
+ * The release itself is a separate class (UL2H_Ability_ChronoBallLaunch). A row of AbilityInputBindings
+ * carries one action and one tag and no verb, so one class per meaning is the only way the same orb can
+ * answer two different buttons.
  *
  * Nothing here trusts the client: the ball is spawned on the server and the direction comes from the
  * server's copy of the control rotation.

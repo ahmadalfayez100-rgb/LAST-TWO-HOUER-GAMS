@@ -8,6 +8,7 @@
 #include "L2H_AbilityModeComponent.generated.h"
 
 class AL2H_ModeOrb;
+class UAnimMontage;
 class UInputAction;
 class UInputMappingContext;
 class UL2H_StruggleWidget;
@@ -123,6 +124,19 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability", meta = (ClampMin = "100.0"))
 	float OrbSpeed = 1800.0f;
 
+	// Poses (upper body; he keeps walking) -----------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Anim")
+	TObjectPtr<UAnimMontage> ShrinkMontage;
+
+	/** Samer laying the return marker. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Anim")
+	TObjectPtr<UAnimMontage> MarkerThrowMontage;
+
+	/** Yousef throwing the slow orb. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Anim")
+	TObjectPtr<UAnimMontage> SlowOrbThrowMontage;
+
 	/** Seconds between two uses of a mode. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability", meta = (ClampMin = "0.0"))
 	float ModeCooldown = 0.6f;
@@ -154,7 +168,13 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerUseMode();
 
+	/** The time-bend button came up: a held bend ends. */
+	UFUNCTION(Server, Reliable)
+	void ServerReleaseBend();
+
 private:
+	void ReleaseBend();
+	void PlayPose(UAnimMontage* Montage);
 	void BuildModes();
 	void TryBindInput();
 	void ApplyAltContext();
@@ -169,6 +189,7 @@ private:
 	bool HasRoomToGrow() const;
 
 	TWeakObjectPtr<UInputComponent> BoundInput;
+	TWeakObjectPtr<UInputComponent> BendReleaseInput;
 	float NextUseTime = 0.0f;
 	float GrowAt = 0.0f;
 	float ToastUntil = 0.0f;

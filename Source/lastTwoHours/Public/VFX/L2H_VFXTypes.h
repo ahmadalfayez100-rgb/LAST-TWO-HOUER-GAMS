@@ -40,6 +40,8 @@ enum class EL2H_VFXMoment : uint8
 	BeamWalk	UMETA(DisplayName = "Beam Walk"),
 	Hook		UMETA(DisplayName = "Hook"),
 	TimeBend	UMETA(DisplayName = "Time Bend"),
+	TimeBendDome	UMETA(DisplayName = "Time Bend Dome"),
+	TimeBendArena	UMETA(DisplayName = "Time Bend Arena"),
 	ChronoBall	UMETA(DisplayName = "Chrono Ball"),
 	WeaponFire	UMETA(DisplayName = "Weapon Fire"),
 	Impact		UMETA(DisplayName = "Impact"),
@@ -80,6 +82,17 @@ struct FL2H_VFXEntry
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|VFX", meta = (ClampMin = "0.0"))
 	float CooldownSeconds = 0.08f;
 
+	/**
+	 * Seconds the spawned component may live before it is taken down by hand.
+	 *
+	 * A system authored to loop never reports completion, and a component with bAutoDestroy only dies
+	 * when its system does -- so an endlessly looping row would leave one live component per spawn for
+	 * the rest of the session. Three seconds outlasts every one-shot row in the library and still bounds
+	 * the looping ones.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|VFX", meta = (ClampMin = "0.0"))
+	float LifetimeSeconds = 3.0f;
+
 	/** True attaches the effect to the character socket; false spawns it at the world contact point. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|VFX")
 	bool bAttachToSocket = true;
@@ -116,6 +129,26 @@ FORCEINLINE uint32 GetTypeHash(const FL2H_VFXKey& Key)
 		GetTypeHash(static_cast<uint8>(Key.Moment)),
 		GetTypeHash(static_cast<uint8>(Key.Surface.GetValue())));
 }
+
+/**
+ * One row with its own key carried alongside it, for a list a row can be added to from outside the
+ * editor.
+ *
+ * Entries is a map keyed by a struct, and a struct cannot be an object key in the JSON the
+ * out-of-editor property path speaks -- so a row that has to exist before anyone ever opens the asset
+ * can only be added as one of these. Same row, same key, spelled so either path can write it.
+ */
+USTRUCT(BlueprintType)
+struct FL2H_VFXKeyedEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|VFX")
+	FL2H_VFXKey Key;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|VFX")
+	FL2H_VFXEntry Entry;
+};
 
 /** The two colours that separate one character's effects from the other's. */
 USTRUCT(BlueprintType)

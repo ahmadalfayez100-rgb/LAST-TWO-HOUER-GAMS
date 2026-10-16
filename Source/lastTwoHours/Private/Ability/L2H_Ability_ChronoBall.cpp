@@ -8,6 +8,7 @@
 #include "GameplayTagContainer.h"
 #include "Time/L2HTimeLog.h"
 #include "Time/L2H_TimeDirector.h"
+#include "VFX/L2H_VFXTypes.h"
 
 UL2H_Ability_ChronoBall::UL2H_Ability_ChronoBall()
 {
@@ -91,9 +92,14 @@ void UL2H_Ability_ChronoBall::ActivateAbility(
 	AL2H_TimeDirector* TimeDirector = AL2H_TimeDirector::Get(Character);
 
 	const FVector Direction = Character->GetControlRotation().Vector();
-	const FVector SpawnLocation = Character->GetActorLocation()
-		+ Direction * FMath::Max(Limits.ThrowForwardOffset, 0.0f)
-		+ FVector(0.0f, 0.0f, Character->BaseEyeHeight * 0.5f);
+	// The orb appears where it will be held rather than at a throw point in front of the chest: it is
+	// taken out, not thrown, so the first frame the player sees is already the right one. The old throw
+	// point stays as the fallback for a skeleton with no HoldSocket.
+	const USkeletalMeshComponent* CharacterMesh = Character->GetMesh();
+	const FVector SpawnLocation = (CharacterMesh && !Limits.HoldSocket.IsNone())
+		? CharacterMesh->GetSocketLocation(Limits.HoldSocket)
+		: Character->GetActorLocation() + Direction * FMath::Max(Limits.ThrowForwardOffset, 0.0f)
+			+ FVector(0.0f, 0.0f, Character->BaseEyeHeight * 0.5f);
 
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = Character;
@@ -112,17 +118,24 @@ void UL2H_Ability_ChronoBall::ActivateAbility(
 		return;
 	}
 
-	// The throw is paid for the moment it leaves the hand. The airborne part is settled when the ball
-	// resolves, and a refusal refunds the flat part.
+	// Taking the orb out is paid for, not the release. The airborne part is settled when the orb
+	// resolves, and putting it away again straight back at the hand refunds the flat part.
 	if (TimeDirector)
 	{
 		TimeDirector->ApplyTimeCost(Character, Limits.CostFlat);
 	}
 
-	Ball->InitBall(Character, Limits, TimeDirector);
+	// Held rather than thrown: the orb waits in the hand until the launch button, which is what makes
+	// the throw aimable. The ability still owns the spawn and the cost, so the orb is never live with
+	// default limits.
+	Ball->HoldInHand(Character, Limits, TimeDirector);
+
+	// The moment the orb becomes real. Its flight and its arrival are the orb's to show, so this is the
+	// one pulse the ability owns.
+	Character->MulticastMomentVFX(EL2H_VFXMoment::ChronoBall, NAME_None);
 	LastThrowTime = World->GetTimeSeconds();
 
-	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s threw a ball for %.1fs"),
+	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s took the orb out for %.1fs"),
 		*GetNameSafe(Character), Limits.CostFlat));
 
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);

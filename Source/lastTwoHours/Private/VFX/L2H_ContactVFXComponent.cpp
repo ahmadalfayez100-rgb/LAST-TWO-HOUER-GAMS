@@ -194,7 +194,7 @@ const FL2H_VFXEntry* UL2H_ContactVFXComponent::ResolveEntry(EL2H_VFXMoment Momen
 	return Found;
 }
 
-bool UL2H_ContactVFXComponent::PlayMomentVFX(EL2H_VFXMoment Moment, FName SocketOverride, FVector ContactLocation)
+bool UL2H_ContactVFXComponent::PlayMomentVFX(EL2H_VFXMoment Moment, FName SocketOverride, FVector ContactLocation, float ScaleMultiplier)
 {
 	if (Moment == EL2H_VFXMoment::None)
 	{
@@ -235,11 +235,16 @@ bool UL2H_ContactVFXComponent::PlayMomentVFX(EL2H_VFXMoment Moment, FName Socket
 	LastSpawnTimes.Add(Key, Now);
 
 	const FName Socket = SocketOverride.IsNone() ? Entry->SocketName : SocketOverride;
-	UNiagaraComponent* Spawned = SpawnEntry(*Entry, Socket, ContactLocation);
+	UNiagaraComponent* Spawned = SpawnEntry(*Entry, Socket, ContactLocation, ScaleMultiplier);
 	if (!Spawned)
 	{
 		return false;
 	}
+
+	// Kept so a moment that has to end with the ability that raised it can be taken back down again.
+	// A one-shot row destroys itself and its weak entry simply expires, so only the moments an ability
+	// explicitly stops are ever walked here.
+	LiveComponents.FindOrAdd(Moment).Add(Spawned);
 
 	// The first time a row resolves is the line worth always seeing, because it is the proof the
 	// library and the pawn agree. Everything after it is noise at footstep frequency.
@@ -264,7 +269,38 @@ bool UL2H_ContactVFXComponent::PlayMomentVFX(EL2H_VFXMoment Moment, FName Socket
 	return true;
 }
 
-UNiagaraComponent* UL2H_ContactVFXComponent::SpawnEntry(const FL2H_VFXEntry& Entry, FName Socket, FVector ContactLocation)
+TArray<TWeakObjectPtr<UNiagaraComponent>>* UL2H_ContactVFXComponent::FindLiveComponents(EL2H_VFXMoment Moment)
+{
+	return LiveComponents.Find(Moment);
+}
+
+int32 UL2H_ContactVFXComponent::StopMomentVFX(EL2H_VFXMoment Moment)
+{
+	TArray<TWeakObjectPtr<UNiagaraComponent>>* Live = LiveComponents.Find(Moment);
+	if (!Live)
+	{
+		return 0;
+	}
+
+	int32 Stopped = 0;
+	for (const TWeakObjectPtr<UNiagaraComponent>& Weak : *Live)
+	{
+		// Deactivated before it is destroyed so the system runs its own teardown rather than being cut
+		// off mid-frame, which is what would otherwise make a beam or ribbon snap out of the world.
+		if (UNiagaraComponent* Component = Weak.Get())
+		{
+			Component->Deactivate();
+			Component->DestroyComponent();
+			++Stopped;
+		}
+	}
+
+	// The whole list goes, live or already expired: every entry in it belonged to this moment.
+	LiveComponents.Remove(Moment);
+	return Stopped;
+}
+
+UNiagaraComponent* UL2H_ContactVFXComponent::SpawnEntry(const FL2H_VFXEntry& Entry, FName Socket, FVector ContactLocation, float ScaleMultiplier)
 {
 	AActor* Owner = GetOwner();
 	if (!Owner)
@@ -337,7 +373,9 @@ UNiagaraComponent* UL2H_ContactVFXComponent::SpawnEntry(const FL2H_VFXEntry& Ent
 	// The two parameters every system in this layer is authored to read, which is what lets one asset
 	// serve both characters and be re-tinted by data alone. A system that does not declare them
 	// simply ignores them.
-	Component->SetVariableFloat(TEXT("User.Scale"), Entry.Scale);
+	// The caller's multiplier is folded in here rather than written over the row, so a row keeps the size
+	// it was authored at and a beat that knows better can still ask for its own.
+	Component->SetVariableFloat(TEXT("User.Scale"), Entry.Scale * ScaleMultiplier);
 	// A row with no colour of its own borrows the character's identity colour, and a character that
 	// has neither keeps the system's own look. A fully transparent colour is what "not authored"
 	// looks like on disk, and taking it for a real tint renders every effect that reads
@@ -351,6 +389,27 @@ UNiagaraComponent* UL2H_ContactVFXComponent::SpawnEntry(const FL2H_VFXEntry& Ent
 	if (Tint.A > 0.0f)
 	{
 		Component->SetVariableLinearColor(TEXT("User.PaletteColor"), Tint);
+	}
+
+	// A looping system never reports completion, so bAutoDestroy never fires and the component would
+	// outlive the moment it was spawned for -- one live component per spawn, for the whole session. The
+	// row's own bound takes it down instead; a one-shot row is long finished by then, so it costs them
+	// nothing, and a row authored to loop is bounded rather than immortal.
+	if (Entry.LifetimeSeconds > 0.0f)
+	{
+		TWeakObjectPtr<UNiagaraComponent> WeakComponent(Component);
+		FTimerHandle Handle;
+		GetWorld()->GetTimerManager().SetTimer(
+			Handle,
+			FTimerDelegate::CreateWeakLambda(this, [WeakComponent]()
+			{
+				if (UNiagaraComponent* Live = WeakComponent.Get())
+				{
+					Live->DestroyComponent();
+				}
+			}),
+			Entry.LifetimeSeconds,
+			false);
 	}
 
 	return Component;

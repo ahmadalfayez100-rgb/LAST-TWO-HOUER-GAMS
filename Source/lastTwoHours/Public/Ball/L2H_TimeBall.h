@@ -37,6 +37,9 @@ public:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 
+	/** Registers the hold, which is the one piece of this actor's state a client cannot infer. */
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 	/**
 	 * Server only. Arms the ball and starts the flight. Called immediately after spawn, so the ball
 	 * is never ticking with default limits.
@@ -46,14 +49,37 @@ public:
 	/** Server only. A second press while this ball is out: recall it, or teleport to it now. */
 	void HandleRepeatPress();
 
+	/**
+	 * Server only. Takes the orb out of the world and holds it in the thrower's hand, waiting for the
+	 * launch button. The flat cost is paid by the ability that calls this, so nothing is charged here:
+	 * this is the same throw, it simply has not been released yet.
+	 */
+	void HoldInHand(AL2H_BaseCharacter* InThrower, const FL2H_BallLimits& InLimits, AL2H_TimeDirector* InDirector);
+
+	/** Server only. Releases a held orb along the thrower's aim, starting the flight the hold deferred. */
+	void LaunchFromHold();
+
+	/**
+	 * Server only. The launch button. One press always means "commit to where the orb is": it releases
+	 * an orb still in the hand, and it travels to an orb that is already out.
+	 */
+	void HandleLaunchPress();
+
 	/** The unresolved ball thrown by Thrower, or null. Scans by owner, so two players can both have one out. */
 	static AL2H_TimeBall* FindForOwner(const UObject* WorldContextObject, const AActor* Thrower);
 
 	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
 	AL2H_BaseCharacter* GetThrower() const { return Thrower; }
 
+	/** The limits this orb was handed, so the thrower's preview draws the arc THIS orb will take. */
+	const FL2H_BallLimits& GetLimits() const { return Limits; }
+
 	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
 	bool IsResolved() const { return bResolved; }
+
+	/** True while the orb is waiting in the thrower's hand rather than flying. */
+	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
+	bool IsHeld() const { return bHeld; }
 
 	/** True once the ball has stopped moving and is waiting for a manual trigger. */
 	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
@@ -65,6 +91,15 @@ protected:
 
 	UFUNCTION()
 	void HandleProjectileBounce(const FHitResult& ImpactResult, const FVector& ImpactVelocity);
+
+	UFUNCTION()
+	void OnRep_Held();
+
+	/** Puts the orb in the holder's hand, or drops it back into the world when it is no longer held. */
+	void AttachToHolder();
+
+	/** Puts a held orb away without throwing it, refunding the flat cost the hold paid. */
+	void PutAway();
 
 	/** The teleport. Moves nobody when the spot is not usable. */
 	void ResolveTeleport();
@@ -128,4 +163,31 @@ protected:
 
 	/** The ball has stopped moving. Only meaningful before anything resolves. */
 	bool bSettled = false;
+
+	/**
+	 * The orb is in the thrower's hand. Replicated with a RepNotify because attachment is not: every
+	 * machine has to reproduce the attach itself, and until it does, its copy of the orb would sit
+	 * where it spawned instead of following the hand.
+	 */
+	UPROPERTY(ReplicatedUsing = OnRep_Held)
+	bool bHeld = false;
+
+	/** How far above the palm the held orb floats once it has risen, in cm. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Hold")
+	float HoldRiseHeight = 28.0f;
+
+	/** Seconds the orb takes to rise from the palm to HoldRiseHeight -- about the length of the summon raise. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Hold", meta = (ClampMin = "0.05"))
+	float HoldRiseTime = 0.6f;
+
+	/** The slow bob of the floating orb, in cm either way. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Hold")
+	float HoldBobHeight = 2.5f;
+
+private:
+	/** Every machine: keeps a held orb floating above the hand it is attached to. Cosmetic. */
+	void UpdateHeldFloat(float DeltaSeconds);
+
+	/** Seconds since the orb came into the hand, on this machine. */
+	float HeldSeconds = 0.0f;
 };

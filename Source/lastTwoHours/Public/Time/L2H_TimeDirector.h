@@ -435,6 +435,17 @@ protected:
 	/** True while this director has switched on "skip assigning gamepad to player 1"; EndPlay switches it back. */
 	bool bOffsetGamepadsForCouch = false;
 
+	/**
+	 * Re-decides "skip assigning gamepad to player 1" from the pads that are connected right now.
+	 *
+	 * The offset is the engine's single-pad mode: UGameViewportClient::RemapControllerInput rewrites
+	 * every gamepad event to the device of local player ControllerId + 1. That is correct while one pad
+	 * has to serve player 2, and wrong the moment a second pad exists -- then both pads drive the second
+	 * player and the first player is left with the keyboard. It is therefore re-decided while the run
+	 * goes, rather than latched once at startup when the pads may not all have been reported yet.
+	 */
+	void UpdateGamepadOffsetForCouch();
+
 	/** Banks every player's leftover, sets the next stage's clock and records the hub. */
 	void CompleteSegment(AL2H_CheckpointTerminal* Hub);
 

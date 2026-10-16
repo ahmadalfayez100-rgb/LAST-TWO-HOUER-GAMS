@@ -3,6 +3,7 @@
 #include "Character/L2H_AbilityModeComponent.h"
 
 #include "AbilitySystemComponent.h"
+#include "Animation/AnimMontage.h"
 #include "Ability/L2H_Ability_ChronoBall.h"
 #include "Ability/L2H_Ability_TimeBend.h"
 #include "Character/L2H_BaseCharacter.h"
@@ -31,6 +32,9 @@ UL2H_AbilityModeComponent::UL2H_AbilityModeComponent()
 	SwitchContext = LoadObject<UInputMappingContext>(nullptr, TEXT("/Game/L2HTime/Input/IMC_L2H_AbilitySwitch.IMC_L2H_AbilitySwitch"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	AltAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/L2HTime/Input/IA_L2H_AbilityAlt.IA_L2H_AbilityAlt"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	AltContext = LoadObject<UInputMappingContext>(nullptr, TEXT("/Game/L2HTime/Input/IMC_L2H_AbilityAlt.IMC_L2H_AbilityAlt"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	ShrinkMontage = LoadObject<UAnimMontage>(nullptr, TEXT("/Game/_Project/animation/L2H/Magic/Montages/AM_L2H_S_ShrinkCast.AM_L2H_S_ShrinkCast"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	MarkerThrowMontage = LoadObject<UAnimMontage>(nullptr, TEXT("/Game/_Project/animation/L2H/Magic/Montages/AM_L2H_S_OrbLaunch.AM_L2H_S_OrbLaunch"), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	SlowOrbThrowMontage = LoadObject<UAnimMontage>(nullptr, TEXT("/Game/_Project/animation/L2H/Magic/Montages/AM_L2H_Y_OrbThrow.AM_L2H_Y_OrbThrow"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 }
 
 void UL2H_AbilityModeComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -133,7 +137,35 @@ void UL2H_AbilityModeComponent::TryBindInput()
 		return;
 	}
 	UEnhancedInputComponent* Input = Cast<UEnhancedInputComponent>(Pawn->InputComponent);
-	if (!Input || BoundInput.Get() == Input)
+	if (!Input)
+	{
+		return;
+	}
+
+	// Yousef's bend is held: its own button's release (whichever row starts it) ends it. Tried every
+	// tick until found, because on a client the granted abilities arrive after the input exists.
+	if (BendReleaseInput.Get() != Input)
+	{
+		const AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(Pawn);
+		const UAbilitySystemComponent* ASC = Character ? Character->GetAbilitySystemComponent() : nullptr;
+		for (const FGameplayAbilitySpec& Spec : ASC ? ASC->GetActivatableAbilities() : TArray<FGameplayAbilitySpec>())
+		{
+			if (!Spec.Ability || !Spec.Ability->GetClass()->IsChildOf(UL2H_Ability_TimeBend::StaticClass()))
+			{
+				continue;
+			}
+			for (const FL2H_AbilityInputBinding& Binding : Character->AbilityInputBindings)
+			{
+				if (Binding.Action && Binding.AbilityTag.IsValid() && Spec.Ability->GetAssetTags().HasTag(Binding.AbilityTag))
+				{
+					Input->BindAction(Binding.Action, ETriggerEvent::Completed, this, &UL2H_AbilityModeComponent::ReleaseBend);
+					BendReleaseInput = Input;
+				}
+			}
+		}
+	}
+
+	if (BoundInput.Get() == Input)
 	{
 		return;
 	}
@@ -262,6 +294,43 @@ void UL2H_AbilityModeComponent::ServerUseMode_Implementation()
 	}
 }
 
+void UL2H_AbilityModeComponent::ReleaseBend()
+{
+	ServerReleaseBend();
+}
+
+void UL2H_AbilityModeComponent::ServerReleaseBend_Implementation()
+{
+	const AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(GetOwner());
+	UAbilitySystemComponent* ASC = Character ? Character->GetAbilitySystemComponent() : nullptr;
+	if (!ASC)
+	{
+		return;
+	}
+	for (FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (!Spec.IsActive() || !Spec.Ability || !Spec.Ability->GetClass()->IsChildOf(UL2H_Ability_TimeBend::StaticClass()))
+		{
+			continue;
+		}
+		for (UGameplayAbility* Instance : Spec.GetAbilityInstances())
+		{
+			if (UL2H_Ability_TimeBend* Bend = Cast<UL2H_Ability_TimeBend>(Instance))
+			{
+				Bend->ReleaseHold();
+			}
+		}
+	}
+}
+
+void UL2H_AbilityModeComponent::PlayPose(UAnimMontage* Montage)
+{
+	if (AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(GetOwner()))
+	{
+		Character->MulticastPlayCharacterMontage(Montage, 1.0f, /*bLoop=*/false);
+	}
+}
+
 bool UL2H_AbilityModeComponent::PayFor(float Seconds)
 {
 	AActor* Owner = GetOwner();
@@ -319,6 +388,7 @@ void UL2H_AbilityModeComponent::UseShrink()
 	{
 		return;
 	}
+	PlayPose(ShrinkMontage);
 	SetShrunk(true);
 	GrowAt = GetWorld()->GetTimeSeconds() + ShrinkSeconds;
 }
@@ -364,6 +434,7 @@ void UL2H_AbilityModeComponent::UseReturn()
 	{
 		if (PayFor(ReturnThrowCost))
 		{
+			PlayPose(MarkerThrowMontage);
 			ReturnMarker = ThrowOrb(false);
 		}
 		return;
@@ -391,6 +462,7 @@ void UL2H_AbilityModeComponent::UseSlowOrb()
 {
 	if (PayFor(SlowOrbCost))
 	{
+		PlayPose(SlowOrbThrowMontage);
 		ThrowOrb(true);
 	}
 }

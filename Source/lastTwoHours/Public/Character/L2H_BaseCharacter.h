@@ -9,6 +9,7 @@
 #include "GameplayTagContainer.h"
 
 #include "Time/L2H_TimeRequest.h"
+#include "VFX/L2H_VFXTypes.h"
 
 #include "L2H_BaseCharacter.generated.h"
 
@@ -79,6 +80,8 @@ class LASTTWOHOURS_API AL2H_BaseCharacter : public ACharacter, public IAbilitySy
 
 	// The clock-face time menu acts through the same server calls the old list did.
 	friend class UL2H_TimeMenuComponent;
+	// The ability modes find the super ability's own button to hear its release.
+	friend class UL2H_AbilityModeComponent;
 
 public:
 	AL2H_BaseCharacter();
@@ -696,6 +699,49 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|Feedback", meta = (ClampMin = "0.0"))
 	float HardLandingSpeed = 750.0f;
 
+	/**
+	 * One cosmetic beat of an ability, played on every machine.
+	 *
+	 * Unreliable, unlike the shot line: the beat is a flourish on top of state that already replicates --
+	 * the arena's slow for Time Bend, the orb itself for the Chrono Ball -- so a dropped pulse costs a
+	 * spark and never the read. The moment is the closed enum rather than a tag, so a typo cannot ask for a
+	 * beat that nothing answers, and a pawn with no VFX component simply plays nothing.
+	 *
+	 * Scale is a multiplier on top of the row's own Scale, for a beat whose effect has to be as wide as
+	 * something the ability knows at cast time -- a Time Bend arena, for instance. One, the default, is
+	 * the row's authored size.
+	 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastMomentVFX(EL2H_VFXMoment Moment, FName SocketOverride, float Scale = 1.0f);
+
+	/**
+	 * Takes a moment's live effects back down on every machine.
+	 *
+	 * The counterpart to the beat above, for an effect whose life has to match the ability that raised
+	 * it rather than a fixed length of its own: a Time Bend arena left standing after its slow ended
+	 * would be showing the player a bubble over a world that had already sped back up. Unreliable for
+	 * the same reason -- a dropped teardown leaves a flourish, never a wrong read of the world, and
+	 * each row still bounds its own life so a miss is temporary.
+	 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastStopMomentVFX(EL2H_VFXMoment Moment);
+	
+	/**
+	 * One cosmetic clip, played on the mesh of every machine. Unreliable for the same reason the moment
+	 * above is: whatever the clip illustrates already replicates, so a dropped play costs a pose and
+	 * never the read. The montage is therefore never load-bearing -- the hold pose coming off is a
+	 * flourish, not what ends the hold.
+	 *
+	 * An empty montage plays nothing, so a pawn whose data has not been authored looks exactly as it
+	 * did before this existed.
+	 */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastPlayCharacterMontage(UAnimMontage* Montage, float PlayRate, bool bLoop);
+	
+	/** Takes that clip back off early, so a one-shot pose is never left stranded on the mesh. */
+	UFUNCTION(NetMulticast, Unreliable)
+	void MulticastStopCharacterMontage(UAnimMontage* Montage, float BlendOutTime);
+
 	/** The hook's reel, mirrored on the owning client so its prediction moves with the server. */
 	UFUNCTION(Client, Reliable)
 	void ClientHookLaunch(FVector_NetQuantize LaunchVelocity);
@@ -1047,6 +1093,12 @@ protected:
 
 	/** Held input: repeats the fire request for an automatic weapon at its FireRate. */
 	void Input_AbilityHeld(const FInputActionValue& Value, FGameplayTag AbilityTag);
+
+	/**
+	 * Fired when a row's action is released. Only the aim row cares: aiming is a held state and the aim
+	 * ability only ever raises the sights, so the lowering half has to come from the release itself.
+	 */
+	void Input_AbilityByTagCompleted(const FInputActionValue& Value, FGameplayTag AbilityTag);
 	float LastAutoFireRequest = -1000.0f;
 
 	// ---------------------------------------------------------------------------------------
@@ -1316,6 +1368,13 @@ protected:
 
 	/** Draws the dotted throw path and its landing ring while a throwable object is held. Owner only. */
 	void UpdateThrowPreview();
+
+	/**
+	 * The same dotted arc, drawn for the Chrono Ball while it is held and the throw is being aimed.
+	 * The numbers come from the orb's own limits, so the curve on screen is the flight that orb will
+	 * actually take rather than a second, separately tuned estimate.
+	 */
+	void UpdateChronoBallPreview();
 
 	/** Stretches the rope mesh from the hand to the anchor, and parks the marker on the anchor. */
 	void UpdateHookVisuals();

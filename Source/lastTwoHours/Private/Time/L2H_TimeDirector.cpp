@@ -5,6 +5,7 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemInterface.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Character/L2H_BaseCharacter.h"
 #include "Character/L2H_CoverComponent.h"
 #include "Engine/GameInstance.h"
@@ -14,6 +15,7 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameplayEffect.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "GenericPlatform/InputDeviceRegistry.h"
 #include "GameMapsSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Save/L2H_SaveSubsystem.h"
@@ -41,6 +43,21 @@ namespace
 	FGameplayTag LookupL2HTag(const TCHAR* TagName)
 	{
 		return FGameplayTag::RequestGameplayTag(FName(TagName), /*ErrorIfNotFound=*/false);
+	}
+
+	/**
+	 * True only for an input device backed by real hardware.
+	 *
+	 * UGameViewportClient::RemapControllerInput mints a "fake" input device, maps it to the local
+	 * player it is redirecting to, and marks it Connected -- which makes GetAllConnectedInputDevices
+	 * report it exactly like a pad. Nothing ever registered hardware for it, so it is the one device
+	 * with no descriptor in FInputDeviceRegistry, and that descriptor is the only thing that tells
+	 * the two apart. Counting a fake as a pad flips the single-pad offset off, and picking one as the
+	 * spare binds player 2 to a device that no hardware can reach.
+	 */
+	bool IsRealInputDevice(const FInputDeviceId Device)
+	{
+		return FInputDeviceRegistry::FindDescriptor(Device).IsSet();
 	}
 }
 
@@ -236,6 +253,11 @@ void AL2H_TimeDirector::ScanForPlayers()
 			L2HTime::LogImportant(TEXT("TimeDirector: a networked player joined -- the couch second player was removed"));
 		}
 	}
+
+	// The pad layout can change while the run is going: a pad that was not connected when the second
+	// player was created can arrive later, and the single-pad offset would then be wrong for the rest
+	// of the session. Re-deciding it here is what keeps two pads on two separate players.
+	UpdateGamepadOffsetForCouch();
 
 	// A destroyed or respawned pawn leaves a dead weak entry behind; drop it so the list stays exact.
 	RegisteredPawns.RemoveAll([](const TWeakObjectPtr<AL2H_BaseCharacter>& Weak) { return !Weak.IsValid(); });
@@ -662,7 +684,7 @@ bool AL2H_TimeDirector::ApplyItemEffect(AL2H_BaseCharacter* User, const FL2H_Ite
 	case EL2H_ItemUseEffect::TimeStop:
 	{
 		UL2H_WorldTimeSubsystem* WorldTime = GetWorld() ? GetWorld()->GetSubsystem<UL2H_WorldTimeSubsystem>() : nullptr;
-		if (bTimeStopped || !WorldTime || WorldTime->IsWorldSlowed())
+		if (bTimeStopped || !WorldTime || WorldTime->IsWorldSlowed() || WorldTime->IsAnyActorSlowed())
 		{
 			L2HTime::LogImportant(TEXT("TimeStop: refused -- time is already bent -- kept"));
 			return false;
@@ -2044,6 +2066,14 @@ void AL2H_TimeDirector::CreateSecondLocalPlayer()
 
 	for (const FInputDeviceId& Device : ConnectedDevices)
 	{
+		// Only real hardware counts as a spare pad. A device the engine invented for a redirection
+		// cannot be driven by anything, so a player created for its user would be created
+		// successfully and then never receive a single event.
+		if (!IsRealInputDevice(Device))
+		{
+			continue;
+		}
+
 		// The default device is the keyboard/mouse pair, which already serves player 1.
 		if (Device == DefaultDevice)
 		{
@@ -2077,19 +2107,32 @@ void AL2H_TimeDirector::CreateSecondLocalPlayer()
 	{
 		CreatedLocalPlayer = PC->GetLocalPlayer();
 
-		// No spare pad: the only gamepad is shared with the keyboard by player 1, so player 2 owns no
-		// device and receives nothing. Hand the gamepad to player 2 (keyboard and mouse stay with
-		// player 1) -- the engine's "skip assigning gamepad to player 1" remap, switched on for this run.
-		if (!TargetUser.IsValid())
+		// Slate routes input per USER, and it indexes its users by PLATFORM USER ID. The engine hands the
+		// new player its viewport focus by LOCAL PLAYER INDEX instead (UGameViewportClient::
+		// NotifyPlayerAdded -> SetUserFocusToGameViewport) and for a couch pad -- which the device mapper
+		// gives a platform user of its own -- those two numbers differ. The focus therefore lands on a user
+		// that owns no hardware, while the pad's own user keeps the empty focus path it was born with. A
+		// pad in that state still raises key events; Slate simply has nowhere to route them, so the pawn
+		// sees nothing and nothing is logged.
+		//
+		// This goes through UMG rather than FSlateApplication directly. The all-users variant is what covers
+		// a pad Slate has not registered yet -- it caches the widget, and Slate applies that cached path
+		// while registering a user, which happens before the first event is routed -- and UMG is already a
+		// module dependency, whereas calling Slate directly would need a new import lib.
+		if (CreatedLocalPlayer.IsValid() && CreatedLocalPlayer->GetPlatformUserId().IsValid())
 		{
-			UGameMapsSettings* MapsSettings = GetMutableDefault<UGameMapsSettings>();
-			if (!MapsSettings->bOffsetPlayerGamepadIds)
-			{
-				MapsSettings->bOffsetPlayerGamepadIds = true;
-				bOffsetGamepadsForCouch = true;
-				L2HTime::LogImportant(TEXT("TimeDirector: one gamepad -- it now drives player 2, keyboard and mouse drive player 1"));
-			}
+			UWidgetBlueprintLibrary::SetFocusToGameViewport();
+
+			L2HTime::LogImportant(FString::Printf(
+				TEXT("TimeDirector: game viewport focus handed to every slate user (couch pad user %d) -- its pad reaches the pawn"),
+				CreatedLocalPlayer->GetPlatformUserId().GetInternalId()));
 		}
+
+		// Whether this run needs the single-pad offset is a question about the pads, not about this one
+		// moment. A pad the engine had not reported yet when the second player was made still has to be
+		// able to drive player 2, and a second pad that arrives later has to be able to break that mode
+		// again -- so the decision lives in one place that the registration scan can re-run.
+		UpdateGamepadOffsetForCouch();
 
 		L2HTime::LogImportant(FString::Printf(
 			TEXT("TimeDirector: created %s for platform user %d (%s)"),
@@ -2100,6 +2143,78 @@ void AL2H_TimeDirector::CreateSecondLocalPlayer()
 	else
 	{
 		L2HTime::LogImportant(TEXT("TimeDirector: could not create a second local player"));
+	}
+
+	LogLocalPlayerBindings();
+}
+
+void AL2H_TimeDirector::UpdateGamepadOffsetForCouch()
+{
+	UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	if (!World || !GameInstance)
+	{
+		return;
+	}
+
+	// The remap only applies to a pair -- UGameViewportClient::RemapControllerInput tests
+	// NumLocalPlayers > 1 -- so a single-player session is left alone.
+	if (GameInstance->GetNumLocalPlayers() < 2)
+	{
+		return;
+	}
+
+	// Count the pads that are connected RIGHT NOW. The default device is the keyboard and mouse pair,
+	// so every other REAL device is a pad -- the same test the spare-device scan uses above to decide
+	// whether player 2 can have a device of its own. Devices the engine invented for a redirection are
+	// filtered out here too: counting one as a pad reported "two gamepads" on a machine with one, which
+	// turned the single-pad offset off and left player 2 with no controller at all.
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+
+	TArray<FInputDeviceId> ConnectedDevices;
+	DeviceMapper.GetAllConnectedInputDevices(ConnectedDevices);
+
+	const FInputDeviceId DefaultDevice = DeviceMapper.GetDefaultInputDevice();
+
+	int32 GamepadCount = 0;
+	for (const FInputDeviceId& Device : ConnectedDevices)
+	{
+		if (Device != DefaultDevice && IsRealInputDevice(Device))
+		{
+			++GamepadCount;
+		}
+	}
+
+	// One pad: the offset is what gives player 2 a controller at all, because that pad is the only
+	// device on the machine that player 1 is not already driving from the keyboard.
+	//
+	// Two or more: every pad already owns a platform user, and the engine routes each one to whichever
+	// local player holds that user -- which is the separation we want. The offset must be OFF here,
+	// because with it on RemapControllerInput sends every pad event to local player ControllerId + 1,
+	// so both pads drive the second player and the first player is left with the keyboard.
+	const bool bWantOffset = (GamepadCount <= 1);
+
+	UGameMapsSettings* MapsSettings = GetMutableDefault<UGameMapsSettings>();
+	if (MapsSettings->bOffsetPlayerGamepadIds == bWantOffset)
+	{
+		return;
+	}
+
+	MapsSettings->bOffsetPlayerGamepadIds = bWantOffset;
+
+	// EndPlay only has to undo a value this director actually changed, and only the "on" direction is
+	// a move away from the project's own default of false.
+	bOffsetGamepadsForCouch = bWantOffset;
+
+	if (bWantOffset)
+	{
+		L2HTime::LogImportant(TEXT("TimeDirector: one gamepad -- it now drives player 2, keyboard and mouse drive player 1"));
+	}
+	else
+	{
+		L2HTime::LogImportant(FString::Printf(
+			TEXT("TimeDirector: %d gamepads -- each drives its own player, the single-pad offset is off"),
+			GamepadCount));
 	}
 
 	LogLocalPlayerBindings();

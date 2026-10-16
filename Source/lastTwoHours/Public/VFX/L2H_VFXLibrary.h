@@ -37,6 +37,17 @@ public:
 	TMap<FL2H_VFXKey, FL2H_VFXEntry> Entries;
 
 	/**
+	 * Rows added on top of Entries, each carrying its own key.
+	 *
+	 * Entries is keyed by a struct and a struct cannot be an object key in the JSON the out-of-editor
+	 * property path speaks, so a moment whose effect has to exist before anyone ever opens this asset
+	 * in the editor can only be added here. The map is read first, so a row a designer authored by
+	 * hand is never shadowed by one a tool wrote.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|VFX")
+	TArray<FL2H_VFXKeyedEntry> AddedEntries;
+
+	/**
 	 * The row to play, or null when this library has nothing for this moment.
 	 *
 	 * Exact surface first, then the SurfaceType_Default row for the same moment. Returns a pointer
@@ -48,4 +59,14 @@ public:
 	/** The Blueprint-facing form of Resolve. False leaves OutEntry untouched. */
 	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
 	bool TryResolve(EL2H_VFXMoment Moment, EPhysicalSurface Surface, FL2H_VFXEntry& OutEntry) const;
+
+	/**
+	 * Writes every row this library holds to the log.
+	 *
+	 * A data asset has no readable listing from outside the editor, so without this the only way to
+	 * find out why a moment played nothing is to open the asset and look. Prints the map's rows and the
+	 * added ones, with the fields that change what a row does.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "L2H|VFX")
+	void LogEntries() const;
 };

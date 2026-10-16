@@ -47,6 +47,16 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "L2H|Time")
 	bool IsWorldSlowed() const;
+	
+	/**
+	 * True while any actor is individually slowed.
+	 *
+	 * A Time Bend arena slows actors one at a time instead of moving the world's dilation, so the world
+	 * can read as untouched while a bend is in full swing. Anything asking "is time already bent?" has to
+	 * ask this as well as IsWorldSlowed, or two slows will end up owning the same actors.
+	 */
+	UFUNCTION(BlueprintPure, Category = "L2H|Time")
+	bool IsAnyActorSlowed() const { return CachedActorDilation.Num() > 0; }
 
 private:
 	/** World dilation captured before the first slow. <= 0 means "not currently slowed". */

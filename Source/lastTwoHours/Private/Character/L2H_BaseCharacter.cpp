@@ -10,6 +10,7 @@
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequenceBase.h"
 #include "AnimationRuntime.h"
+#include "Ball/L2H_TimeBall.h"
 #include "Character/L2H_CoverComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/CameraShakeBase.h"
@@ -39,6 +40,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Save/L2H_SaveSubsystem.h"
 #include "UI/L2H_TimeMenuWidget.h"
+#include "VFX/L2H_ContactVFXComponent.h"
 #include "UI/L2H_TimeRequestPromptWidget.h"
 #include "World/L2H_CheckpointTerminal.h"
 #include "World/L2H_PingMarker.h"
@@ -815,6 +817,10 @@ void AL2H_BaseCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputC
 
 			// Held: only the fire row uses it, and only for an automatic weapon (see Input_AbilityHeld).
 			EIC->BindAction(Binding.Action, ETriggerEvent::Triggered, this, &AL2H_BaseCharacter::Input_AbilityHeld, Binding.AbilityTag);
+
+			// Released: only the aim row uses it, and only to lower the sights it raised (see
+			// Input_AbilityByTagCompleted).
+			EIC->BindAction(Binding.Action, ETriggerEvent::Completed, this, &AL2H_BaseCharacter::Input_AbilityByTagCompleted, Binding.AbilityTag);
 		}
 	}
 }
@@ -1100,6 +1106,9 @@ void AL2H_BaseCharacter::Input_AbilityByTag(const FInputActionValue& Value, FGam
 		return;
 	}
 
+	L2HTime::LogImportant(FString::Printf(
+		TEXT("AbilityInput: %s received tag %s"), *GetNameSafe(this), *AbilityTag.ToString()));
+
 	// D-pad Down is the weapon switch; while the time menu is open it moves the selection instead.
 	static const FGameplayTag SwitchTag = FGameplayTag::RequestGameplayTag(TEXT("Ability.Weapon.Switch"), /*ErrorIfNotFound=*/false);
 	if (TimeQuickMenu && SwitchTag.IsValid() && AbilityTag == SwitchTag)
@@ -1143,6 +1152,24 @@ void AL2H_BaseCharacter::Input_AbilityHeld(const FInputActionValue& Value, FGame
 		LastAutoFireRequest = Now;
 		ServerTryActivateAbilityByTag(AbilityTag);
 	}
+}
+
+void AL2H_BaseCharacter::Input_AbilityByTagCompleted(const FInputActionValue& Value, FGameplayTag AbilityTag)
+{
+	// Aim is a hold, not a toggle: the aim ability only ever raises the sights, because a press carries
+	// no "and now lower them" verb and the ability is reached through a tag, not through a value. Left
+	// at that the weapon stayed aimed for the rest of the session once the button came up -- the laser,
+	// the fire gate and the aim pose all keying off the same flag. The release is where the lowering
+	// belongs, and this is the same named-tag special case the press path already uses for Switch and
+	// Fire. UpdateAimState watches the flag and hands back the speed and FOV halves once it drops, so
+	// nothing more is needed here.
+	static const FGameplayTag AimTag = FGameplayTag::RequestGameplayTag(TEXT("Ability.Weapon.Aim"), /*ErrorIfNotFound=*/false);
+	if (!IsLocallyControlled() || !AimTag.IsValid() || AbilityTag != AimTag)
+	{
+		return;
+	}
+
+	ServerSetWeaponAiming(false);
 }
 
 void AL2H_BaseCharacter::Landed(const FHitResult& Hit)
@@ -1389,6 +1416,7 @@ void AL2H_BaseCharacter::Tick(float DeltaSeconds)
 	UpdateHookSwing(DeltaSeconds);
 	UpdateCarryAnimation(DeltaSeconds);
 	UpdateThrowPreview();
+	UpdateChronoBallPreview();
 	UpdateClimbDownMove(DeltaSeconds);
 	UpdateReviveHold();
 	UpdateDownView();
@@ -2048,6 +2076,85 @@ void AL2H_BaseCharacter::UpdateThrowPreview()
 	Params.SimFrequency = 15.0f;
 	Params.ActorsToIgnore.Add(this);
 	Params.ActorsToIgnore.Add(CarriedActor);
+	Params.DrawDebugType = EDrawDebugTrace::None;
+
+	FPredictProjectilePathResult Result;
+	const bool bHit = UGameplayStatics::PredictProjectilePath(this, Params, Result);
+
+	// A dotted line, one small sphere per step shrinking toward the end, and a flat disc where it lands.
+	TArray<FTransform> Dots;
+	const int32 Count = Result.PathData.Num();
+	for (int32 Index = 1; Index < Count; ++Index)
+	{
+		const float Alpha = static_cast<float>(Index) / FMath::Max(Count - 1, 1);
+		Dots.Add(FTransform(FQuat::Identity, Result.PathData[Index].Location, FVector(FMath::Lerp(0.07f, 0.045f, Alpha))));
+	}
+	if (bHit)
+	{
+		const FQuat Flat = FRotationMatrix::MakeFromZ(Result.HitResult.ImpactNormal).ToQuat();
+		Dots.Add(FTransform(Flat, Result.HitResult.ImpactPoint + Result.HitResult.ImpactNormal * 2.0f, FVector(0.6f, 0.6f, 0.02f)));
+	}
+
+	ThrowArc->ClearInstances();
+	ThrowArc->AddInstances(Dots, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/true);
+	ThrowArc->SetVisibility(true);
+}
+
+void AL2H_BaseCharacter::UpdateChronoBallPreview()
+{
+	if (!ThrowArc)
+	{
+		return;
+	}
+
+	// The arc is a view aid, so it exists only where the view does, and it is only drawn while the throw
+	// is being aimed. Aiming the orb IS the weapon's aim state: L2 raises the sights and, with an orb in
+	// the hand, also draws where it would go.
+	const UL2H_WeaponComponent* Weapons = FindComponentByClass<UL2H_WeaponComponent>();
+	AL2H_TimeBall* Orb = (IsLocallyControlled() && Weapons && Weapons->IsAiming() && GetCarryPose() == 0)
+		? AL2H_TimeBall::FindForOwner(this, this)
+		: nullptr;
+
+	// An orb already out has no arc to preview: the only orb worth drawing for is one still waiting in
+	// the hand. The carry preview draws the same component, and the pose check above keeps the two apart.
+	const bool bWanted = Orb && Orb->IsHeld();
+
+	if (!bWanted)
+	{
+		if (ThrowArc->IsVisible())
+		{
+			ThrowArc->ClearInstances();
+			ThrowArc->SetVisibility(false);
+		}
+		return;
+	}
+
+	// Drawn from the orb's own limits, so the curve on screen is the flight this orb will actually take
+	// rather than a second, separately tuned estimate of it.
+	const FL2H_BallLimits& BallLimits = Orb->GetLimits();
+
+	FPredictProjectilePathParams Params;
+	Params.StartLocation = Orb->GetActorLocation();
+	Params.LaunchVelocity = GetControlRotation().Vector() * BallLimits.ThrowSpeed;
+	Params.bTraceWithCollision = true;
+	Params.bTraceWithChannel = true;
+	Params.TraceChannel = ECC_Visibility;
+	Params.ProjectileRadius = 16.0f;
+	Params.MaxSimTime = FMath::Max(BallLimits.PreviewMaxTime, 0.1f);
+	Params.SimFrequency = 1.0f / FMath::Max(BallLimits.PreviewStepTime, 0.01f);
+
+	// The orb carries its own gravity scale, and the arc has to use it or the curve on screen is a
+	// different curve from the one the orb flies. An OverrideGravityZ of exactly 0 means "use world
+	// gravity", so a deliberately flat throw is clamped to an imperceptible fall instead of being drawn
+	// as a full arc.
+	if (const UWorld* World = GetWorld())
+	{
+		const float BallGravityZ = World->GetGravityZ() * BallLimits.GravityScale;
+		Params.OverrideGravityZ = FMath::IsNearlyZero(BallGravityZ) ? -UE_KINDA_SMALL_NUMBER : BallGravityZ;
+	}
+
+	Params.ActorsToIgnore.Add(this);
+	Params.ActorsToIgnore.Add(Orb);
 	Params.DrawDebugType = EDrawDebugTrace::None;
 
 	FPredictProjectilePathResult Result;
@@ -2865,6 +2972,87 @@ void AL2H_BaseCharacter::MulticastShotFX_Implementation(FVector_NetQuantize Star
 		}
 	}
 	OnShotFX(Start, End, bHook);
+}
+
+void AL2H_BaseCharacter::MulticastMomentVFX_Implementation(EL2H_VFXMoment Moment, FName SocketOverride, float Scale)
+{
+	// Found rather than cached: the component lives on the Blueprint, so a pawn that has none simply shows
+	// no effects and must not fail -- and the whole layer can be lifted off this class later without
+	// leaving a dangling reference behind. The throttle lives in the component, per (moment, surface).
+	if (UL2H_ContactVFXComponent* ContactVFX = FindComponentByClass<UL2H_ContactVFXComponent>())
+	{
+		ContactVFX->PlayMomentVFX(Moment, SocketOverride, FVector::ZeroVector, Scale);
+	}
+}
+
+void AL2H_BaseCharacter::MulticastStopMomentVFX_Implementation(EL2H_VFXMoment Moment)
+{
+	// Found rather than cached, for the same reason the beat above is: a pawn with no VFX component
+	// simply has nothing to take down, and the layer stays liftable off this class.
+	if (UL2H_ContactVFXComponent* ContactVFX = FindComponentByClass<UL2H_ContactVFXComponent>())
+	{
+		const int32 Stopped = ContactVFX->StopMomentVFX(Moment);
+		if (Stopped > 0)
+		{
+			L2HTime::LogVerbose(FString::Printf(
+				TEXT("ContactVFX %s: took down %d component(s) for moment %d"),
+				*GetNameSafe(this), Stopped, static_cast<int32>(Moment)));
+		}
+	}
+}
+
+void AL2H_BaseCharacter::MulticastPlayCharacterMontage_Implementation(UAnimMontage* Montage, float PlayRate, bool bLoop)
+{
+	if (!Montage)
+	{
+		return;
+	}
+
+	// The mesh rather than a cached pointer: a pawn whose mesh arrives later, or a re-spawned one,
+	// would otherwise play its first clip into nothing.
+	USkeletalMeshComponent* SkelMesh = GetMesh();
+	UAnimInstance* AnimInstance = SkelMesh ? SkelMesh->GetAnimInstance() : nullptr;
+	if (!AnimInstance)
+	{
+		return;
+	}
+
+	// Playing does not stop what is already on the mesh: the weapon layer puts its own montages here,
+	// and a hold pose that cancelled a reload would be a bug in a cosmetic flourish.
+	AnimInstance->Montage_Play(
+		Montage, FMath::Max(PlayRate, 0.01f), EMontagePlayReturnType::MontageLength, 0.0f, /*bStopAllMontages=*/false);
+
+	// Looping is expressed by re-arming the montage's own first section rather than by a montage
+	// setting, because the loop belongs to THIS moment (an orb waiting in a hand) and not to the clip,
+	// which the same asset may want to play once somewhere else. A montage with no sections is left
+	// alone rather than asked to loop something that does not exist.
+	if (bLoop)
+	{
+		const FName LoopSection = Montage->GetSectionName(0);
+		if (!LoopSection.IsNone())
+		{
+			AnimInstance->Montage_SetNextSection(LoopSection, LoopSection, Montage);
+		}
+	}
+}
+
+void AL2H_BaseCharacter::MulticastStopCharacterMontage_Implementation(UAnimMontage* Montage, float BlendOutTime)
+{
+	if (!Montage)
+	{
+		return;
+	}
+
+	USkeletalMeshComponent* SkelMesh = GetMesh();
+	UAnimInstance* AnimInstance = SkelMesh ? SkelMesh->GetAnimInstance() : nullptr;
+	if (!AnimInstance)
+	{
+		return;
+	}
+
+	// Stopped by asset rather than by stopping whatever is playing: the weapon layer and the parkour
+	// layer both put their own montages on this same mesh, and a blanket stop would take theirs too.
+	AnimInstance->Montage_Stop(FMath::Max(BlendOutTime, 0.0f), Montage);
 }
 
 void AL2H_BaseCharacter::RestoreWalkSpeed()
@@ -3768,6 +3956,10 @@ void AL2H_BaseCharacter::ServerTryActivateAbilityByTag_Implementation(FGameplayT
 {
 	if (!AbilitySystemComponent || !AbilityTag.IsValid() || IsDowned() || IsDead())
 	{
+		L2HTime::LogImportant(FString::Printf(
+			TEXT("AbilityDispatch: %s rejected tag %s (ASC=%d, valid_tag=%d, downed=%d, dead=%d)"),
+			*GetNameSafe(this), *AbilityTag.ToString(), AbilitySystemComponent != nullptr,
+			AbilityTag.IsValid(), IsDowned(), IsDead()));
 		return;
 	}
 
@@ -3775,7 +3967,10 @@ void AL2H_BaseCharacter::ServerTryActivateAbilityByTag_Implementation(FGameplayT
 	// pointing at an ability this pawn was never granted is a silent no-op rather than a bad state.
 	FGameplayTagContainer AbilityTags;
 	AbilityTags.AddTag(AbilityTag);
-	AbilitySystemComponent->TryActivateAbilitiesByTag(AbilityTags);
+	const bool bActivated = AbilitySystemComponent->TryActivateAbilitiesByTag(AbilityTags);
+	L2HTime::LogImportant(FString::Printf(
+		TEXT("AbilityDispatch: %s tag %s activation_result=%d"),
+		*GetNameSafe(this), *AbilityTag.ToString(), bActivated));
 }
 
 void AL2H_BaseCharacter::ServerRequestTimeFromPartner_Implementation()

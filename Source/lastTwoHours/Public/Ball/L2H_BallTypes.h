@@ -4,6 +4,8 @@
 
 #include "CoreMinimal.h"
 
+class UAnimMontage;
+
 #include "L2H_BallTypes.generated.h"
 
 /** What turns a throw into a teleport. */
@@ -140,4 +142,38 @@ struct FL2H_BallLimits
 	/** Distance at which a returning ball counts as back in the hand and disappears. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall", meta = (ClampMin = "0.0"))
 	float RecallAcceptRadius = 90.0f;
+
+	// ----- hold and aim ---------------------------------------------------------------------
+
+	/**
+	 * Socket the orb waits in while it is held. The orb is a real actor from the moment it is taken
+	 * out -- which is what lets the throw be aimed -- so this is where it hangs until it is released.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall")
+	FName HoldSocket = TEXT("hand_r");
+
+	/**
+	 * Seconds of flight the dotted preview arc covers. Independent of MaxFlightTime: the arc is a view
+	 * aid, and drawing it for the whole legal flight would clutter the screen for a long throw.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall", meta = (ClampMin = "0.1"))
+	float PreviewMaxTime = 2.5f;
+
+	/** Seconds between two dots of the preview arc. Smaller is a smoother curve and more dots. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall", meta = (ClampMin = "0.01"))
+	float PreviewStepTime = 0.06f;
+	
+	// ----- animation ------------------------------------------------------------------------
+	
+	/**
+	 * Looping clip played on the thrower's mesh while the orb waits in his hand. This is the pose the
+	 * player reads as the spell being held in front of him: the orb is already real and aimable, so the
+	 * hand carrying it should not be the ordinary idle. Empty is a valid look and plays nothing.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall")
+	TObjectPtr<UAnimMontage> HoldMontage;
+	
+	/** One-shot clip played on the thrower the frame the orb is released. Empty plays nothing. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "L2H|ChronoBall")
+	TObjectPtr<UAnimMontage> LaunchMontage;
 };

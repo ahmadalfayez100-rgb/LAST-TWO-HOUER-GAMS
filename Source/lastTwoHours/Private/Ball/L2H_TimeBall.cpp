@@ -2,19 +2,23 @@
 
 #include "Ball/L2H_TimeBall.h"
 
+#include "Animation/AnimMontage.h"
 #include "Ball/L2H_BallTypes.h"
 #include "Character/L2H_BaseCharacter.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Net/UnrealNetwork.h"
 #include "Time/L2HTimeLog.h"
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/EnumProperty.h"
+#include "VFX/L2H_VFXTypes.h"
 
 AL2H_TimeBall::AL2H_TimeBall()
 {
@@ -63,7 +67,9 @@ void AL2H_TimeBall::BeginPlay()
 {
 	Super::BeginPlay();
 
-	SetActorTickEnabled(HasAuthority());
+	// Every machine ticks: the flight is still resolved on the server only, but the held orb's float
+	// above the hand is drawn by each machine for itself.
+	SetActorTickEnabled(true);
 
 	if (ProjectileMovement)
 	{
@@ -113,11 +119,228 @@ void AL2H_TimeBall::InitBall(AL2H_BaseCharacter* InThrower, const FL2H_BallLimit
 		*ThrowLocation.ToCompactString(), *Direction.ToCompactString()));
 }
 
+void AL2H_TimeBall::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	// The hold is the one piece of this actor's state a client cannot work out for itself: the flight
+	// replicates through the movement component, but being in the hand is not movement.
+	DOREPLIFETIME(AL2H_TimeBall, bHeld);
+}
+
+void AL2H_TimeBall::HoldInHand(AL2H_BaseCharacter* InThrower, const FL2H_BallLimits& InLimits, AL2H_TimeDirector* InDirector)
+{
+	Thrower = InThrower;
+	Limits = InLimits;
+	Director = InDirector;
+
+	// Nothing about the throw has happened yet, so the flight state starts clean: an orb that arrives
+	// here after a recall must not inherit the previous attempt's clock or its settled flag.
+	AirborneTime = 0.0f;
+	bSettled = false;
+	bReturning = false;
+	bResolved = false;
+
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Deactivate();
+	}
+
+	// Held, the orb is not a solid: it must not block its own holder, be hit by anything, or report a
+	// landing it did not make. Collision comes back on the launch.
+	if (BallCollision)
+	{
+		BallCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	bHeld = true;
+
+	// The pose that reads as the spell being held in front of him. Played from here rather than from
+	// the ability because the ball, not the ability, is what knows when the hold begins -- the taking
+	// out pays and ends, and the orb outlives it.
+	if (Thrower)
+	{
+		// A montage whose sections already loop (summon, then a hold that links to itself) is left to its
+		// own links; re-arming its first section would replay the summon forever.
+		const bool bAuthoredLoop = Limits.HoldMontage && Limits.HoldMontage->CompositeSections.Num() > 1;
+		Thrower->MulticastPlayCharacterMontage(Limits.HoldMontage, 1.0f, /*bLoop=*/!bAuthoredLoop);
+	}
+	HeldSeconds = 0.0f;
+
+	// Done here as well as in OnRep_Held. A RepNotify never fires on the authority, so the server --
+	// the machine the player is really holding the orb for -- has to attach itself.
+	AttachToHolder();
+
+	ThrowLocation = GetActorLocation();
+
+	L2HTime::LogVerbose(FString::Printf(TEXT("ChronoBall: %s took the orb out"), *GetNameSafe(InThrower)));
+}
+
+void AL2H_TimeBall::LaunchFromHold()
+{
+	if (!bHeld)
+	{
+		return;
+	}
+
+	bHeld = false;
+
+	// The release replaces the hold pose with the throw. Stopping the hold first keeps the two from
+	// blending against each other, and the launch clip is played even when no hold was authored.
+	if (Thrower)
+	{
+		Thrower->MulticastStopCharacterMontage(Limits.HoldMontage, 0.15f);
+		Thrower->MulticastPlayCharacterMontage(Limits.LaunchMontage, 1.0f, /*bLoop=*/false);
+	}
+
+	// Kept in world space on purpose: the orb leaves from exactly where it was hanging, which is what
+	// makes the arc drawn while aiming the arc it actually takes.
+	DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+
+	if (BallCollision)
+	{
+		BallCollision->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		if (Thrower)
+		{
+			BallCollision->IgnoreActorWhenMoving(Thrower, true);
+		}
+	}
+
+	// The direction is read on the server, from the server's copy of the control rotation, exactly as
+	// it is for a throw that never went through the hand.
+	const FVector Direction = Thrower ? Thrower->GetControlRotation().Vector() : GetActorForwardVector();
+
+	ThrowLocation = GetActorLocation();
+	AirborneTime = 0.0f;
+	bSettled = false;
+	bReturning = false;
+
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->InitialSpeed = Limits.ThrowSpeed;
+		ProjectileMovement->MaxSpeed = FMath::Max(Limits.MaxSpeed, Limits.ThrowSpeed);
+		ProjectileMovement->ProjectileGravityScale = Limits.GravityScale;
+		ProjectileMovement->Bounciness = Limits.Bounciness;
+		ProjectileMovement->BounceVelocityStopSimulatingThreshold = Limits.SettleVelocityThreshold;
+
+		ProjectileMovement->Velocity = Direction * Limits.ThrowSpeed;
+		ProjectileMovement->Activate(true);
+	}
+
+	if (Thrower)
+	{
+		Thrower->MulticastMomentVFX(EL2H_VFXMoment::ChronoBall, NAME_None);
+	}
+
+	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s launched the orb"), *GetNameSafe(Thrower)));
+}
+
+void AL2H_TimeBall::HandleLaunchPress()
+{
+	if (!HasAuthority() || bResolved)
+	{
+		return;
+	}
+
+	// One button, one meaning: commit to where the orb is. In the hand that is the throw; already out
+	// it is the teleport. That is what lets the ability be a single press rather than a mode.
+	if (bHeld)
+	{
+		LaunchFromHold();
+		return;
+	}
+
+	ResolveTeleport();
+}
+
+void AL2H_TimeBall::PutAway()
+{
+	if (bResolved)
+	{
+		return;
+	}
+
+	bHeld = false;
+	bResolved = true;
+
+	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s put the orb away"), *GetNameSafe(Thrower)));
+
+	// The throw never happened, so the flat cost the hold paid goes straight back. There is nothing
+	// airborne to settle, which is why this refunds the flat cost and not the airborne one.
+	Refund(Limits.CostFlat);
+
+	Finish();
+}
+
+void AL2H_TimeBall::OnRep_Held()
+{
+	HeldSeconds = 0.0f;
+	AttachToHolder();
+}
+
+void AL2H_TimeBall::UpdateHeldFloat(float DeltaSeconds)
+{
+	const AL2H_BaseCharacter* Holder = Thrower ? Thrower.Get() : Cast<AL2H_BaseCharacter>(GetOwner());
+	const USkeletalMeshComponent* HolderMesh = Holder ? Holder->GetMesh() : nullptr;
+	if (!HolderMesh || GetAttachParentActor() != Holder)
+	{
+		return;
+	}
+
+	// Straight up in the world, not along the hand: the hand turns through the summon, and the orb
+	// should rise off the palm rather than swing with the wrist.
+	HeldSeconds += DeltaSeconds;
+	const float Rise = FMath::SmoothStep(0.0f, HoldRiseTime, HeldSeconds);
+	const float Bob = FMath::Sin(HeldSeconds * 2.6f) * HoldBobHeight * Rise;
+	const FName Socket = GetAttachParentSocketName();
+	const FVector Hand = HolderMesh->GetSocketLocation(Socket);
+	SetActorLocation(Hand + FVector(0.0f, 0.0f, HoldRiseHeight * Rise + Bob));
+}
+
+void AL2H_TimeBall::AttachToHolder()
+{
+	// Thrower is not replicated, so a client resolves the holder through the owner the spawn set.
+	AL2H_BaseCharacter* Holder = Thrower;
+	if (!Holder)
+	{
+		Holder = Cast<AL2H_BaseCharacter>(GetOwner());
+	}
+
+	if (!bHeld)
+	{
+		DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		return;
+	}
+
+	USkeletalMeshComponent* HolderMesh = Holder ? Holder->GetMesh() : nullptr;
+	if (HolderMesh)
+	{
+		AttachToComponent(HolderMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, Limits.HoldSocket);
+
+		// The float reads the hand after this frame's pose, not the one before it.
+		AddTickPrerequisiteComponent(HolderMesh);
+	}
+}
+
 void AL2H_TimeBall::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
+	if (bHeld)
+	{
+		UpdateHeldFloat(DeltaSeconds);
+	}
+
 	if (!HasAuthority() || bResolved)
+	{
+		return;
+	}
+
+	// A held orb is not in flight: it hangs in the hand until the launch button. Letting it tick here
+	// would keep charging CostPerSecondAirborne for time it spends doing nothing, and would let
+	// BallLifetime give up on a throw that was never made.
+	if (bHeld)
 	{
 		return;
 	}
@@ -219,6 +442,14 @@ void AL2H_TimeBall::HandleRepeatPress()
 		return;
 	}
 
+	// Still in the hand. Taking it out was the whole of the first press, so pressing again simply puts
+	// it back: the orb never left, so this is not a recall and there is no flight to fly.
+	if (bHeld)
+	{
+		PutAway();
+		return;
+	}
+
 	if (Limits.RepeatPressBehavior == EL2H_BallRepeatBehavior::TeleportNow)
 	{
 		ResolveTeleport();
@@ -271,6 +502,10 @@ void AL2H_TimeBall::ResolveTeleport()
 
 	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s teleported to %s"),
 		*GetNameSafe(Thrower), *Destination.ToCompactString()));
+
+	// The arrival is the beat the player actually reads, so the ball plays it on every machine rather
+	// than leaving it to the throw's pulse, which fired at the other end of the flight.
+	Thrower->MulticastMomentVFX(EL2H_VFXMoment::ChronoBall, NAME_None);
 
 	if (Limits.bDestroyBallAfterSuccess)
 	{
@@ -334,6 +569,14 @@ void AL2H_TimeBall::ResolveFailure(const FString& Reason)
 void AL2H_TimeBall::Finish()
 {
 	bResolved = true;
+
+	// Every ending passes through here -- a teleport, a recall, a refusal, a put-away and the
+	// lifetime running out -- so this is the one place the hold pose is guaranteed to come off. Left
+	// to the launch path alone, a recalled or refused orb would leave the pose stuck on the mesh.
+	if (Thrower)
+	{
+		Thrower->MulticastStopCharacterMontage(Limits.HoldMontage, 0.2f);
+	}
 
 	if (ProjectileMovement)
 	{
