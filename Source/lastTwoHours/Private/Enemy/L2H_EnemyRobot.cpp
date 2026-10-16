@@ -16,6 +16,9 @@
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
 #include "World/L2H_HidingCloset.h"
+#include "AbilitySystemComponent.h"
+#include "Character/L2H_StruggleComponent.h"
+#include "TimerManager.h"
 #include "Character/L2H_FlashlightComponent.h"
 #include "Components/PointLightComponent.h"
 #include "EngineUtils.h"
@@ -67,6 +70,15 @@ AL2H_EnemyRobot::AL2H_EnemyRobot()
 	EyeLight->SetAttenuationRadius(140.0f);
 	EyeLight->SetCastShadows(false);
 	EyeLight->SetLightColor(FLinearColor(0.25f, 0.6f, 1.0f));
+
+	// MSHF's paired grab, retargeted: the robot's four clips, then the player's four.
+	static const TCHAR* GrabNames[] = { TEXT("Start_Robot"), TEXT("Loop_Robot"), TEXT("Escape_Robot"), TEXT("Bite_Robot"),
+		TEXT("Start_Player"), TEXT("Loop_Player"), TEXT("Escape_Player"), TEXT("Bite_Player") };
+	for (const TCHAR* Name : GrabNames)
+	{
+		const FString Path = FString::Printf(TEXT("/Game/_Project/animation/L2H/Grab/AS_L2H_Grab_%s.AS_L2H_Grab_%s"), Name, Name);
+		GrabClips.Add(LoadObject<UAnimSequenceBase>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet));
+	}
 }
 
 void AL2H_EnemyRobot::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -185,6 +197,12 @@ void AL2H_EnemyRobot::Tick(float DeltaSeconds)
 		{
 			Strike();
 		}
+		return;
+	}
+
+	if (GrabVictim.IsValid())
+	{
+		TickGrab();
 		return;
 	}
 
@@ -679,6 +697,18 @@ void AL2H_EnemyRobot::Strike()
 		return;
 	}
 
+	// Sometimes the blow is a grab: the victim has to mash free, or the partner has to hit it off. A dodge
+	// (its i-frames) gets out of a grab as it does out of a blow.
+	static const FGameplayTag Invulnerable = FGameplayTag::RequestGameplayTag(TEXT("State.Invulnerable"), false);
+	const UAbilitySystemComponent* VictimASC = Victim->GetAbilitySystemComponent();
+	const bool bDodging = VictimASC && Invulnerable.IsValid() && VictimASC->HasMatchingGameplayTag(Invulnerable);
+	if (!bDodging && World->GetTimeSeconds() >= NextGrabTime && FMath::FRand() < GrabChance
+		&& !UL2H_StruggleComponent::IsGrabbed(Victim) && Victim->FindComponentByClass<UL2H_StruggleComponent>())
+	{
+		BeginGrab(Victim);
+		return;
+	}
+
 	// Through the director, like a bullet: invulnerability, the health layer and the time it costs all
 	// apply without the robot knowing about any of them.
 	if (AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this))
@@ -686,6 +716,203 @@ void AL2H_EnemyRobot::Strike()
 		Director->ApplyTimeDamage(Victim, AttackDamage);
 	}
 	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s hit %s for %.0f"), *GetNameSafe(this), *GetNameSafe(Victim), AttackDamage));
+}
+
+void AL2H_EnemyRobot::BeginGrab(AL2H_BaseCharacter* Victim)
+{
+	UL2H_StruggleComponent* Struggle = Victim ? Victim->FindComponentByClass<UL2H_StruggleComponent>() : nullptr;
+	const UWorld* World = GetWorld();
+	if (!Struggle || !World)
+	{
+		return;
+	}
+	GrabVictim = Victim;
+	GrabEndTime = World->GetTimeSeconds() + GrabSeconds;
+	StopMoving();
+	GetCharacterMovement()->StopMovementImmediately();
+	Struggle->BeginGrab(this, GrabSeconds);
+
+	// The held player stands in front of it, facing it.
+	const FVector Front = GetActorForwardVector().GetSafeNormal2D();
+	const FVector Place(GetActorLocation().X + Front.X * GrabDistance, GetActorLocation().Y + Front.Y * GrabDistance, Victim->GetActorLocation().Z);
+	MulticastGrab(Victim, static_cast<uint8>(EGrabPhase::Start), Place, (-Front).Rotation().Yaw);
+	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s grabs %s (%.1fs to break free)"), *GetNameSafe(this), *GetNameSafe(Victim), GrabSeconds));
+}
+
+void AL2H_EnemyRobot::TickGrab()
+{
+	AL2H_BaseCharacter* Victim = GrabVictim.Get();
+	const UL2H_StruggleComponent* Struggle = Victim ? Victim->FindComponentByClass<UL2H_StruggleComponent>() : nullptr;
+	const UWorld* World = GetWorld();
+	if (!Victim || !Struggle || !World || Victim->IsDowned() || Victim->IsDead())
+	{
+		EndGrab(EGrabPhase::Cancel);
+		return;
+	}
+	if (Struggle->GetStruggle() >= 1.0f)
+	{
+		EndGrab(EGrabPhase::Escape);
+	}
+	else if (World->GetTimeSeconds() >= GrabEndTime)
+	{
+		EndGrab(EGrabPhase::Bite);
+	}
+}
+
+void AL2H_EnemyRobot::EndGrab(EGrabPhase How)
+{
+	AL2H_BaseCharacter* Victim = GrabVictim.Get();
+	GrabVictim.Reset();
+	const UWorld* World = GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.0f;
+	NextGrabTime = Now + GrabCooldown;
+	NextAttackTime = FMath::Max(NextAttackTime, Now + AttackInterval);
+
+	if (UL2H_StruggleComponent* Struggle = Victim ? Victim->FindComponentByClass<UL2H_StruggleComponent>() : nullptr)
+	{
+		Struggle->EndGrab();
+	}
+	if (!Victim)
+	{
+		return;
+	}
+	MulticastGrab(Victim, static_cast<uint8>(How), Victim->GetActorLocation(), Victim->GetActorRotation().Yaw);
+
+	if (How == EGrabPhase::Bite)
+	{
+		if (AL2H_TimeDirector* Director = AL2H_TimeDirector::Get(this))
+		{
+			Director->ApplyTimeDamage(Victim, GrabBiteDamage);
+		}
+		L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s bites %s for %.0f"), *GetNameSafe(this), *GetNameSafe(Victim), GrabBiteDamage));
+	}
+	else if (How == EGrabPhase::Escape)
+	{
+		// Shoved off: it reels, which is the moment to hit back or run.
+		Stun(GrabEscapeStun);
+		L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s lost its grip on %s"), *GetNameSafe(this), *GetNameSafe(Victim)));
+	}
+}
+
+void AL2H_EnemyRobot::MulticastGrab_Implementation(AL2H_BaseCharacter* Victim, uint8 Phase, FVector_NetQuantize VictimLocation, float VictimYaw)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	const EGrabPhase How = static_cast<EGrabPhase>(Phase);
+	const int32 Serial = ++GrabSerial;
+	TWeakObjectPtr<AL2H_BaseCharacter> WeakVictim(Victim);
+	UAnimInstance* VictimAnim = (Victim && Victim->GetMesh()) ? Victim->GetMesh()->GetAnimInstance() : nullptr;
+
+	if (How == EGrabPhase::Start)
+	{
+		if (UCharacterMovementComponent* VictimMove = Victim ? Victim->GetCharacterMovement() : nullptr)
+		{
+			VictimMove->StopMovementImmediately();
+			VictimMove->DisableMovement();
+			Victim->GetCapsuleComponent()->IgnoreActorWhenMoving(this, true);
+			GetCapsuleComponent()->IgnoreActorWhenMoving(Victim, true);
+			Victim->SetActorLocationAndRotation(FVector(VictimLocation), FRotator(0.0f, VictimYaw, 0.0f), false, nullptr, ETeleportType::TeleportPhysics);
+		}
+		PlayGrabClipOnRobot(0, false);
+		if (VictimAnim && GetGrabClip(4))
+		{
+			VictimAnim->PlaySlotAnimationAsDynamicMontage(GetGrabClip(4), TEXT("DefaultSlot"), 0.15f, 0.1f);
+		}
+		// Into the loop when the start is done, unless the grab has already ended.
+		const float StartLength = GetGrabClip(0) ? GetGrabClip(0)->GetPlayLength() : 1.0f;
+		FTimerHandle LoopTimer;
+		World->GetTimerManager().SetTimer(LoopTimer, FTimerDelegate::CreateWeakLambda(this, [this, Serial, WeakVictim]()
+		{
+			if (Serial != GrabSerial)
+			{
+				return;
+			}
+			PlayGrabClipOnRobot(1, true);
+			AL2H_BaseCharacter* Held = WeakVictim.Get();
+			UAnimInstance* Anim = (Held && Held->GetMesh()) ? Held->GetMesh()->GetAnimInstance() : nullptr;
+			if (Anim && GetGrabClip(5))
+			{
+				Anim->PlaySlotAnimationAsDynamicMontage(GetGrabClip(5), TEXT("DefaultSlot"), 0.1f, 0.2f, 1.0f, 1000);
+			}
+		}), FMath::Max(StartLength - 0.05f, 0.05f), false);
+		return;
+	}
+
+	// The end: the break free, the bite, or just letting go.
+	const int32 RobotClip = How == EGrabPhase::Escape ? 2 : (How == EGrabPhase::Bite ? 3 : -1);
+	const float HoldSeconds = How == EGrabPhase::Escape ? 1.0f : (How == EGrabPhase::Bite ? 1.6f : 0.01f);
+	if (RobotClip >= 0)
+	{
+		PlayGrabClipOnRobot(RobotClip, false);
+		if (VictimAnim && GetGrabClip(RobotClip + 4))
+		{
+			VictimAnim->PlaySlotAnimationAsDynamicMontage(GetGrabClip(RobotClip + 4), TEXT("DefaultSlot"), 0.1f, 0.3f);
+		}
+	}
+	else
+	{
+		RestoreRobotAnimation();
+		if (VictimAnim)
+		{
+			VictimAnim->StopSlotAnimation(0.2f, TEXT("DefaultSlot"));
+		}
+	}
+
+	// The player gets their feet back after the first stagger; the robot its own graph once its clip is done.
+	FTimerHandle FreeTimer;
+	World->GetTimerManager().SetTimer(FreeTimer, FTimerDelegate::CreateWeakLambda(this, [this, WeakVictim, How]()
+	{
+		AL2H_BaseCharacter* Freed = WeakVictim.Get();
+		if (!Freed)
+		{
+			return;
+		}
+		Freed->GetCapsuleComponent()->IgnoreActorWhenMoving(this, false);
+		GetCapsuleComponent()->IgnoreActorWhenMoving(Freed, false);
+		if (UCharacterMovementComponent* Move = Freed->GetCharacterMovement(); Move && Move->MovementMode == MOVE_None && !Freed->IsDead())
+		{
+			Move->SetMovementMode(MOVE_Walking);
+		}
+		if (UAnimInstance* Anim = Freed->GetMesh() ? Freed->GetMesh()->GetAnimInstance() : nullptr)
+		{
+			Anim->StopSlotAnimation(0.3f, TEXT("DefaultSlot"));
+		}
+		// Thrown back a step, out of reach, from the server (the movement replicates from there).
+		if (HasAuthority() && How != EGrabPhase::Cancel)
+		{
+			Freed->LaunchCharacter(GetActorForwardVector().GetSafeNormal2D() * 250.0f + FVector(0.0f, 0.0f, 80.0f), true, true);
+		}
+	}), HoldSeconds, false);
+
+	const float RobotLength = (RobotClip >= 0 && GetGrabClip(RobotClip)) ? FMath::Min(GetGrabClip(RobotClip)->GetPlayLength(), 2.0f) : 0.01f;
+	FTimerHandle RestoreTimer;
+	World->GetTimerManager().SetTimer(RestoreTimer, FTimerDelegate::CreateWeakLambda(this, [this, Serial]()
+	{
+		if (Serial == GrabSerial)
+		{
+			RestoreRobotAnimation();
+		}
+	}), RobotLength, false);
+}
+
+void AL2H_EnemyRobot::PlayGrabClipOnRobot(int32 Index, bool bLoop)
+{
+	// The robot's own graph has no slot for these, so the mesh plays them directly and is handed back after.
+	if (UAnimSequenceBase* Clip = GetGrabClip(Index); Clip && !bDead)
+	{
+		GetMesh()->PlayAnimation(Clip, bLoop);
+	}
+}
+
+void AL2H_EnemyRobot::RestoreRobotAnimation()
+{
+	if (!bDead)
+	{
+		GetMesh()->SetAnimationMode(EAnimationMode::AnimationBlueprint);
+	}
 }
 
 void AL2H_EnemyRobot::MulticastWindup_Implementation(float Seconds)
@@ -718,6 +945,12 @@ float AL2H_EnemyRobot::TakeDamage(float DamageAmount, const FDamageEvent& Damage
 
 	L2HTime::LogImportant(FString::Printf(TEXT("Enemy: %s took %.0f (%.0f left)"), *GetNameSafe(this), DamageAmount, Health));
 
+	if (GrabVictim.IsValid() && Health > 0.0f)
+	{
+		// The partner's shot or blow: it lets go and reels.
+		EndGrab(EGrabPhase::Escape);
+	}
+
 	if (Health <= 0.0f)
 	{
 		Die();
@@ -738,6 +971,10 @@ void AL2H_EnemyRobot::Die()
 		return;
 	}
 
+	if (GrabVictim.IsValid())
+	{
+		EndGrab(EGrabPhase::Cancel);
+	}
 	bDead = true;
 	ApplyDeathPhysics();
 	StopMoving();
@@ -767,6 +1004,21 @@ void AL2H_EnemyRobot::Stun(float Seconds)
 	if (!HasAuthority() || bDead || !World || Seconds <= 0.0f)
 	{
 		return;
+	}
+	if (GrabVictim.IsValid())
+	{
+		// A blow that stuns it (the pipe) breaks its hold. Not through EndGrab, which stuns in turn.
+		AL2H_BaseCharacter* Held = GrabVictim.Get();
+		GrabVictim.Reset();
+		if (UL2H_StruggleComponent* Struggle = Held ? Held->FindComponentByClass<UL2H_StruggleComponent>() : nullptr)
+		{
+			Struggle->EndGrab();
+		}
+		if (Held)
+		{
+			MulticastGrab(Held, static_cast<uint8>(EGrabPhase::Escape), Held->GetActorLocation(), Held->GetActorRotation().Yaw);
+		}
+		NextGrabTime = World->GetTimeSeconds() + GrabCooldown;
 	}
 	bStunned = true;
 	StunEndTime = FMath::Max(StunEndTime, World->GetTimeSeconds() + Seconds);

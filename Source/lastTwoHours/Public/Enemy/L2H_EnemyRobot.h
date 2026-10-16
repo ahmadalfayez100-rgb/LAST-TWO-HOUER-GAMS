@@ -10,6 +10,7 @@
 class AL2H_BaseCharacter;
 class AL2H_HidingCloset;
 class UPointLightComponent;
+class UAnimSequenceBase;
 
 /** What the robot is doing; its eye light shows it (blue calm, yellow wary, red hunting). */
 UENUM(BlueprintType)
@@ -181,6 +182,39 @@ protected:
 	float SearchSeconds = 6.0f;
 
 	// ---------------------------------------------------------------------------------------------
+	// Grab: a swing that lands may be a grab instead. The player mashes to break free; the partner can
+	// free them by hitting the robot; otherwise the bite lands.
+	// ---------------------------------------------------------------------------------------------
+
+	/** Chance a landed swing is a grab (when the cooldown allows). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float GrabChance = 0.35f;
+
+	/** Seconds between grabs. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.0"))
+	float GrabCooldown = 10.0f;
+
+	/** Seconds the player has to break free before the bite. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.5"))
+	float GrabSeconds = 4.0f;
+
+	/** Health the bite takes (through the director, so it costs time too). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.0"))
+	float GrabBiteDamage = 30.0f;
+
+	/** How far in front of the robot the held player stands (capsule centres). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.0"))
+	float GrabDistance = 40.0f;
+
+	/** Seconds the robot reels after a player breaks free or the partner hits it off. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab", meta = (ClampMin = "0.0"))
+	float GrabEscapeStun = 1.6f;
+
+	/** MSHF's paired grab clips: start, loop, break free, bite. [0..3] the robot's, [4..7] the player's. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Enemy|Grab")
+	TArray<TObjectPtr<UAnimSequenceBase>> GrabClips;
+
+	// ---------------------------------------------------------------------------------------------
 	// Movement
 	// ---------------------------------------------------------------------------------------------
 
@@ -289,6 +323,22 @@ protected:
 
 	/** Turns in place toward Location at the movement component's rotation rate. */
 	void FaceToward(const FVector& Location, float DeltaSeconds);
+
+	// Grab (server state; the multicast plays it everywhere).
+	enum class EGrabPhase : uint8 { Start, Escape, Bite, Cancel };
+	void BeginGrab(AL2H_BaseCharacter* Victim);
+	void TickGrab();
+	void EndGrab(EGrabPhase How);
+	UFUNCTION(NetMulticast, Reliable)
+	void MulticastGrab(AL2H_BaseCharacter* Victim, uint8 Phase, FVector_NetQuantize VictimLocation, float VictimYaw);
+	UAnimSequenceBase* GetGrabClip(int32 Index) const { return GrabClips.IsValidIndex(Index) ? GrabClips[Index].Get() : nullptr; }
+	void PlayGrabClipOnRobot(int32 Index, bool bLoop);
+	void RestoreRobotAnimation();
+	TWeakObjectPtr<AL2H_BaseCharacter> GrabVictim;
+	float GrabEndTime = 0.0f;
+	float NextGrabTime = 0.0f;
+	/** Every machine: bumped per grab, so a timer from an earlier one does nothing. */
+	int32 GrabSerial = 0;
 
 	TWeakObjectPtr<AL2H_BaseCharacter> HuntTarget;
 	TWeakObjectPtr<AL2H_HidingCloset> ClosetToOpen;

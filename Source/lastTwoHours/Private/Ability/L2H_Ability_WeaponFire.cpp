@@ -7,6 +7,7 @@
 #include "Damage/L2H_DamageTypeDataAsset.h"
 #include "Damage/L2H_HitReactionComponent.h"
 #include "Enemy/L2H_EnemyRobot.h"
+#include "Character/L2H_StruggleComponent.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Time/L2HTimeLog.h"
@@ -110,6 +111,13 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 	// blocked by the fall, so without this exemption the gate below refused the hook outright while airborne.
 	const UL2H_WeaponDataAsset* ActiveData = Weapons->GetActiveWeaponData();
 	const bool bIsTool = ActiveData && ActiveData->Data.FireAbilityOverride;
+	// Held by an enemy: the hands are busy breaking free.
+	if (UL2H_StruggleComponent::IsGrabbed(Character))
+	{
+		Finish(false);
+		return;
+	}
+
 	if (!Weapons->IsAiming() && !bIsTool)
 	{
 		L2HTime::LogVerbose(FString::Printf(TEXT("Fire refused: %s is not aiming"), *GetNameSafe(Character)));
