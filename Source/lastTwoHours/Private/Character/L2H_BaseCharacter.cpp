@@ -62,6 +62,7 @@
 #include "TimerManager.h"
 #include "Character/L2H_FlashlightComponent.h"
 #include "Character/L2H_StruggleComponent.h"
+#include "Character/L2H_PauseMenuComponent.h"
 
 AL2H_BaseCharacter::AL2H_BaseCharacter()
 {
@@ -219,6 +220,8 @@ AL2H_BaseCharacter::AL2H_BaseCharacter()
 	CreateDefaultSubobject<UL2H_FlashlightComponent>(TEXT("L2H_Flashlight"));
 	// Being grabbed: the mash to break free and its prompt. It binds its own key too.
 	CreateDefaultSubobject<UL2H_StruggleComponent>(TEXT("L2H_Struggle"));
+	// The in-game clock menu (Options / P). It binds its own key too.
+	CreateDefaultSubobject<UL2H_PauseMenuComponent>(TEXT("L2H_PauseMenu"));
 	CoverAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/Input/IA_Crouch.IA_Crouch"), nullptr, LOAD_NoWarn | LOAD_Quiet);
 	// Mapped only by IMC_L2H_Cover, which the cover component adds while in cover over the Blueprint's input.
 	CoverJumpAction = LoadObject<UInputAction>(nullptr, TEXT("/Game/L2HTime/Input/IA_L2H_CoverCross.IA_L2H_CoverCross"), nullptr, LOAD_NoWarn | LOAD_Quiet);

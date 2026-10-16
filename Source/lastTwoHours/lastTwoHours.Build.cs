@@ -49,6 +49,9 @@ public class lastTwoHours : ModuleRules
 			"GameplayTags",
 			"EnhancedInput",
 			"UMG",
+			"Slate",
+			"SlateCore",
+			"InputCore",
 			// The hook rope is a looping Niagara beam owned by the pawn and updated from C++ every frame.
 			"Niagara",
 			// The test enemy is possessed by a plain AAIController so its movement input has a controller.
