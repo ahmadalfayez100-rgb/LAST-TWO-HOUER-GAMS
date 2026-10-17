@@ -18,21 +18,26 @@ UENUM(BlueprintType)
 enum class EL2H_AbilityMode : uint8
 {
 	Default UMETA(DisplayName = "Default"),
-	/** Samer: shrink himself for a while -- small gaps, harder to see, no shooting. */
+	/** Samer: shrink himself for a while -- small gaps, harder to see, no shooting (Ability.Shrink). */
 	Shrink UMETA(DisplayName = "Shrink"),
-	/** Samer: throw a marker; the next press takes him back to it. */
+	/** Samer: lay a mark; the next press takes him back to it (Ability.RecallAnchor). */
 	Return UMETA(DisplayName = "Return"),
 	/** Yousef: throw an orb that sticks to what it hits and slows it. */
 	SlowOrb UMETA(DisplayName = "Slow Orb"),
+	/** Samer: an orb that plants a slow field where it lands (Ability.SlowBall). */
+	SlowBall UMETA(DisplayName = "Slow Ball"),
+	/** Samer: an orb that plants a haste field where it lands (Ability.HasteBall). */
+	HasteBall UMETA(DisplayName = "Haste Ball"),
 };
 
 /**
- * The character's set of abilities on L1, switched with R1. Samer: his ball, shrink, return. Yousef: his
- * arena, the slow orb. The first mode is the character's existing super ability, untouched; the others
- * are run here, through server calls, and take over L1 with a higher-priority input context while they
- * are selected. Which set a character has is read from the abilities it was given.
+ * The character's set of abilities on L1, switched with R1. Samer: his travel ball, the slow and haste
+ * balls, shrink, return. Yousef: his arena, the slow orb. The first mode is the character's existing super
+ * ability, untouched; the others take over L1 with a higher-priority input context while selected. Samer's
+ * modes are his own GAS abilities, activated here by tag; Yousef's orb is run here directly. Which set a
+ * character has is read from the abilities it was given.
  *
- * Every mode costs time through the director, like the super abilities do.
+ * Every mode costs time through the director, like the super abilities do. The balls charge their own.
  */
 UCLASS(ClassGroup = (L2H), meta = (BlueprintSpawnableComponent, DisplayName = "L2H Ability Modes"))
 class LASTTWOHOURS_API UL2H_AbilityModeComponent : public UActorComponent
@@ -48,9 +53,6 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "L2H|Ability")
 	EL2H_AbilityMode GetMode() const { return Modes.IsValidIndex(ModeIndex) ? Modes[ModeIndex] : EL2H_AbilityMode::Default; }
-
-	UFUNCTION(BlueprintPure, Category = "L2H|Ability")
-	bool IsShrunk() const { return bShrunk; }
 
 	/** Local: the next mode (R1). */
 	UFUNCTION(BlueprintCallable, Category = "L2H|Ability")
@@ -86,10 +88,7 @@ protected:
 
 	// Shrink ----------------------------------------------------------------------------------------
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Shrink", meta = (ClampMin = "0.1", ClampMax = "1.0"))
-	float ShrinkScale = 0.4f;
-
-	/** Seconds before growing back on its own (a press grows back sooner). */
+	/** Seconds before growing back on its own (a press grows back sooner). The size is on the shrink component. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Shrink", meta = (ClampMin = "1.0"))
 	float ShrinkSeconds = 10.0f;
 
@@ -103,10 +102,6 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Return", meta = (ClampMin = "0.0"))
 	float ReturnJumpCost = 3.0f;
-
-	/** Seconds a laid marker waits before it fades. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "L2H|Ability|Return", meta = (ClampMin = "1.0"))
-	float ReturnMarkerSeconds = 90.0f;
 
 	// Slow orb --------------------------------------------------------------------------------------
 
@@ -149,18 +144,8 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_ModeIndex)
 	int32 ModeIndex = 0;
 
-	UPROPERTY(ReplicatedUsing = OnRep_Shrunk)
-	bool bShrunk = false;
-
-	/** Samer's laid marker (or the one still in the air). */
-	UPROPERTY(Replicated)
-	TObjectPtr<AL2H_ModeOrb> ReturnMarker;
-
 	UFUNCTION()
 	void OnRep_ModeIndex();
-
-	UFUNCTION()
-	void OnRep_Shrunk();
 
 	UFUNCTION(Server, Reliable)
 	void ServerSetMode(int32 NewIndex);
@@ -181,12 +166,14 @@ private:
 	void ShowToast(const FText& Text);
 
 	bool PayFor(float Seconds);
+	/** Enough time for this, with a second left over (the press never ends the player). */
+	bool CanAfford(float Seconds) const;
+	bool HasAbilityTag(FName Tag) const;
+	bool ActivateByTag(FName Tag);
 	void UseShrink();
 	void UseReturn();
 	void UseSlowOrb();
 	AL2H_ModeOrb* ThrowOrb(bool bSlow);
-	void SetShrunk(bool bNewShrunk);
-	bool HasRoomToGrow() const;
 
 	TWeakObjectPtr<UInputComponent> BoundInput;
 	TWeakObjectPtr<UInputComponent> BendReleaseInput;

@@ -6,15 +6,19 @@
 #include "Ball/L2H_BallTypes.h"
 #include "Character/L2H_BaseCharacter.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Net/UnrealNetwork.h"
+#include "TimerManager.h"
 #include "Time/L2HTimeLog.h"
+#include "Time/L2H_WorldTimeSubsystem.h"
 #include "Time/L2H_TimeDirector.h"
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/EnumProperty.h"
@@ -251,6 +255,14 @@ void AL2H_TimeBall::HandleLaunchPress()
 		return;
 	}
 
+	// A field orb commits to nothing once it is out: where it lands is the whole of its effect, so the
+	// second meaning of this button -- travel to the orb -- does not exist for it. The throw above is
+	// untouched, which is why this sits after the hold check rather than at the top.
+	if (IsFieldEnabled())
+	{
+		return;
+	}
+
 	ResolveTeleport();
 }
 
@@ -337,6 +349,13 @@ void AL2H_TimeBall::Tick(float DeltaSeconds)
 		return;
 	}
 
+	// A planted orb is owned by its field timers rather than by a flight: it is not airborne, so it
+	// must not be charged CostPerSecondAirborne and must not be given up on at BallLifetime.
+	if (bFieldActive)
+	{
+		return;
+	}
+
 	// A held orb is not in flight: it hangs in the hand until the launch button. Letting it tick here
 	// would keep charging CostPerSecondAirborne for time it spends doing nothing, and would let
 	// BallLifetime give up on a throw that was never made.
@@ -405,6 +424,15 @@ void AL2H_TimeBall::HandleProjectileStop(const FHitResult& ImpactResult)
 
 	bSettled = true;
 
+	// A field orb has finished travelling the moment it stops: pinning itself to what it hit IS the
+	// effect. There is nothing to teleport to, so every trigger mode below is skipped rather than
+	// re-interpreted -- a field orb authored with OnSettled would otherwise teleport its thrower.
+	if (IsFieldEnabled())
+	{
+		PlantField(ImpactResult);
+		return;
+	}
+
 	if (Limits.Trigger == EL2H_BallTrigger::Manual)
 	{
 		L2HTime::LogVerbose(TEXT("ChronoBall: settled -- waiting for the manual trigger"));
@@ -439,6 +467,15 @@ void AL2H_TimeBall::HandleRepeatPress()
 {
 	if (!HasAuthority() || bResolved)
 	{
+		return;
+	}
+
+	// A planted field is not recalled: a second press closes it where it stands, which is the only
+	// decision a field orb has left to make. Recalling would drag the field back into the hand.
+	if (bFieldActive)
+	{
+		EndField();
+		Finish();
 		return;
 	}
 
@@ -489,6 +526,10 @@ void AL2H_TimeBall::ResolveTeleport()
 	const float HalfHeight = Capsule ? Capsule->GetScaledCapsuleHalfHeight() : 90.0f;
 	const FVector Destination = GetActorLocation()
 		+ FVector(0.0f, 0.0f, HalfHeight + FMath::Max(Limits.LandingClearanceAboveFeet, 0.0f));
+	
+	// He has to leave something behind. Without it the move reads as a camera cut: the eye sees the
+	// arrival but never the departure, and a teleport with only an arrival looks like a pop.
+	Thrower->MulticastMomentVFX(EL2H_VFXMoment::TeleportOut, NAME_None);
 
 	// bNoCheck stays false on purpose: TeleportTo is allowed to slide the landing spot to somewhere it
 	// actually fits, and its return value is the only proof the move happened.
@@ -502,11 +543,12 @@ void AL2H_TimeBall::ResolveTeleport()
 
 	L2HTime::LogImportant(FString::Printf(TEXT("ChronoBall: %s teleported to %s"),
 		*GetNameSafe(Thrower), *Destination.ToCompactString()));
-
+	
 	// The arrival is the beat the player actually reads, so the ball plays it on every machine rather
-	// than leaving it to the throw's pulse, which fired at the other end of the flight.
-	Thrower->MulticastMomentVFX(EL2H_VFXMoment::ChronoBall, NAME_None);
-
+	// than leaving it to the throw's pulse, which fired at the other end of the flight. It is the teleport
+	// moment rather than the ball moment: the throw's own pulse already fired where he left from.
+	Thrower->MulticastMomentVFX(EL2H_VFXMoment::TeleportIn, NAME_None);
+	
 	if (Limits.bDestroyBallAfterSuccess)
 	{
 		Finish();
@@ -570,6 +612,10 @@ void AL2H_TimeBall::Finish()
 {
 	bResolved = true;
 
+	// Whatever ended the orb, its field lets go first: an actor must never be left dilated because the
+	// orb that dilated it was destroyed. No-op when no field was ever planted.
+	EndField();
+
 	// Every ending passes through here -- a teleport, a recall, a refusal, a put-away and the
 	// lifetime running out -- so this is the one place the hold pose is guaranteed to come off. Left
 	// to the launch path alone, a recalled or refused orb would leave the pose stuck on the mesh.
@@ -585,6 +631,193 @@ void AL2H_TimeBall::Finish()
 	}
 
 	Destroy();
+}
+
+bool AL2H_TimeBall::IsFieldEnabled() const
+{
+	// Both come off the Blueprint child, so a missing value reads as "this is the plain travel orb"
+	// rather than as a field with no size.
+	return FieldDiameter > 0.0f && !FMath::IsNearlyEqual(FieldDilation, 1.0f, 0.01f);
+}
+
+void AL2H_TimeBall::PlantField(const FHitResult& Impact)
+{
+	UWorld* World = GetWorld();
+	if (!World || !HasAuthority() || bFieldActive || !IsFieldEnabled())
+	{
+		return;
+	}
+
+	bFieldActive = true;
+
+	// Adhesive rather than bouncing: the orb keeps the surface it hit. Left to its own physics on a
+	// slope it would keep rolling and drag the whole field across the level with it, which is exactly
+	// the thing a placed field must not do.
+	if (UPrimitiveComponent* HitComponent = Impact.GetComponent())
+	{
+		AttachToComponent(HitComponent, FAttachmentTransformRules::KeepWorldTransform, Impact.BoneName);
+	}
+
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->StopMovementImmediately();
+		ProjectileMovement->Deactivate();
+	}
+
+	// Planted, the orb is scenery: it must not block or push the players standing in its own field.
+	if (BallCollision)
+	{
+		BallCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+
+	// First fill happens here, not on the first timer tick, so the field is real on the frame it
+	// plants -- a 0.2s gap would be visible as the orb landing and nothing happening.
+	RefreshField();
+
+	if (FieldDuration > 0.0f)
+	{
+		World->GetTimerManager().SetTimer(
+			FieldEndTimer, this, &AL2H_TimeBall::HandleFieldExpired, FieldDuration, false);
+	}
+
+	World->GetTimerManager().SetTimer(
+		FieldRefreshTimer, this, &AL2H_TimeBall::RefreshField,
+		FMath::Max(FieldRefreshInterval, 0.05f), true);
+
+	L2HTime::LogImportant(FString::Printf(
+		TEXT("ChronoBall: %s planted a %.2fx field %.0fcm across for %.1fs"),
+		*GetNameSafe(Thrower), FieldDilation, FieldDiameter, FieldDuration));
+}
+
+void AL2H_TimeBall::RefreshField()
+{
+	UWorld* World = GetWorld();
+	if (!World || !bFieldActive)
+	{
+		return;
+	}
+
+	UL2H_WorldTimeSubsystem* TimeSubsystem = World->GetSubsystem<UL2H_WorldTimeSubsystem>();
+	if (!TimeSubsystem)
+	{
+		L2HTime::LogImportant(TEXT("ChronoBall: refused -- the world time subsystem is missing"));
+		EndField();
+		Finish();
+		return;
+	}
+
+	const FVector Center = GetActorLocation();
+	const float RadiusSquared = FMath::Square(FieldDiameter * 0.5f);
+
+	// Rebuilt on every beat rather than fixed at plant time: the field has to take in whoever walks
+	// into it and let go of whoever walks out. Restoring an actor twice would also restore a dilation
+	// that is no longer the one that was cached, so membership is tracked exactly.
+	TArray<AActor*> Inside;
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* Actor = *It;
+
+		if (!Actor || Actor == this)
+		{
+			continue;
+		}
+
+		// A slow orb must not slow the man who threw it; a haste orb usually is thrown to be stood in,
+		// so which way this reads is authored per orb instead of decided here.
+		if (bFieldExemptsThrower && Actor == Thrower)
+		{
+			continue;
+		}
+
+		if (FVector::DistSquared(Actor->GetActorLocation(), Center) > RadiusSquared)
+		{
+			continue;
+		}
+
+		Inside.Add(Actor);
+	}
+
+	TArray<AActor*> ToRestore;
+	for (const TObjectPtr<AActor>& Previous : FieldActors)
+	{
+		AActor* Actor = Previous.Get();
+		if (Actor && !Inside.Contains(Actor))
+		{
+			ToRestore.Add(Actor);
+		}
+	}
+
+	if (ToRestore.Num() > 0)
+	{
+		TimeSubsystem->RestoreActorSlow(ToRestore);
+	}
+
+	if (Inside.Num() > 0)
+	{
+		// The same call slows and hastens: the subsystem clamps only to a sane range, not to 1.
+		TimeSubsystem->ApplyActorSlow(Inside, FieldDilation);
+	}
+
+	FieldActors.Reset();
+	FieldActors.Reserve(Inside.Num());
+	for (AActor* Actor : Inside)
+	{
+		FieldActors.Add(Actor);
+	}
+}
+
+void AL2H_TimeBall::EndField()
+{
+	if (!bFieldActive)
+	{
+		return;
+	}
+
+	bFieldActive = false;
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	World->GetTimerManager().ClearTimer(FieldRefreshTimer);
+	World->GetTimerManager().ClearTimer(FieldEndTimer);
+
+	UL2H_WorldTimeSubsystem* TimeSubsystem = World->GetSubsystem<UL2H_WorldTimeSubsystem>();
+	if (TimeSubsystem)
+	{
+		// The list this field applied, not the list standing in it now: an actor that walked out
+		// between the last refresh and this moment is still owed its own speed back.
+		TArray<AActor*> ToRestore;
+		ToRestore.Reserve(FieldActors.Num());
+		for (const TObjectPtr<AActor>& Actor : FieldActors)
+		{
+			if (AActor* Resolved = Actor.Get())
+			{
+				ToRestore.Add(Resolved);
+			}
+		}
+
+		if (ToRestore.Num() > 0)
+		{
+			TimeSubsystem->RestoreActorSlow(ToRestore);
+		}
+	}
+
+	FieldActors.Reset();
+
+	L2HTime::LogImportant(FString::Printf(
+		TEXT("ChronoBall: the field on %s closed"), *GetNameSafe(Thrower)));
+}
+
+void AL2H_TimeBall::HandleFieldExpired()
+{
+	// Closing before the orb goes away, so the actors are released while the orb that owns them is
+	// still alive to be named in the log.
+	EndField();
+	Finish();
 }
 
 void AL2H_TimeBall::PayCost(float Seconds)
@@ -736,7 +969,7 @@ bool AL2H_TimeBall::IsParkourStateIdle(FString& OutReason) const
 	return true;
 }
 
-AL2H_TimeBall* AL2H_TimeBall::FindForOwner(const UObject* WorldContextObject, const AActor* Thrower)
+AL2H_TimeBall* AL2H_TimeBall::FindForOwner(const UObject* WorldContextObject, const AActor* Thrower, const UClass* ExactClass)
 {
 	if (!WorldContextObject || !Thrower)
 	{
@@ -746,14 +979,24 @@ AL2H_TimeBall* AL2H_TimeBall::FindForOwner(const UObject* WorldContextObject, co
 	TArray<AActor*> Found;
 	UGameplayStatics::GetAllActorsOfClass(WorldContextObject, AL2H_TimeBall::StaticClass(), Found);
 
+	// The hand first, then a flight, then a planted field: with a field standing, the launch button and
+	// the aim arc still have to find the orb he is holding, not the one on the floor.
+	AL2H_TimeBall* Flying = nullptr;
+	AL2H_TimeBall* Planted = nullptr;
 	for (AActor* Actor : Found)
 	{
 		AL2H_TimeBall* Ball = Cast<AL2H_TimeBall>(Actor);
-		if (Ball && !Ball->IsResolved() && Ball->GetThrower() == Thrower)
+		if (!Ball || Ball->IsResolved() || Ball->GetThrower() != Thrower || (ExactClass && Ball->GetClass() != ExactClass))
+		{
+			continue;
+		}
+		if (Ball->IsHeld())
 		{
 			return Ball;
 		}
+		AL2H_TimeBall*& Slot = Ball->IsFieldActive() ? Planted : Flying;
+		Slot = Slot ? Slot : Ball;
 	}
 
-	return nullptr;
+	return Flying ? Flying : Planted;
 }

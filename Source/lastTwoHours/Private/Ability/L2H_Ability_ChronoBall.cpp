@@ -56,11 +56,25 @@ void UL2H_Ability_ChronoBall::ActivateAbility(
 
 	// A second press while a ball is out is a decision about that ball, not a new throw. Recall is the
 	// baseline, so the ball comes back and the thrower never moves without the flight.
-	if (AL2H_TimeBall* Existing = AL2H_TimeBall::FindForOwner(this, Character))
+	// Only this ability's own kind of orb: the travel, slow and haste orbs are three abilities, and a
+	// press of one must never recall or close another.
+	const UClass* OwnClass = BallClass ? BallClass.Get() : AL2H_TimeBall::StaticClass();
+	if (AL2H_TimeBall* Existing = AL2H_TimeBall::FindForOwner(this, Character, OwnClass))
 	{
 		Existing->HandleRepeatPress();
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 		return;
+	}
+
+	// One orb in the hand at a time; two would hang on the same palm and share one launch button.
+	if (const AL2H_TimeBall* Other = AL2H_TimeBall::FindForOwner(this, Character))
+	{
+		if (Other->IsHeld())
+		{
+			L2HTime::LogImportant(TEXT("ChronoBall: refused -- another orb is already in the hand"));
+			EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+			return;
+		}
 	}
 
 	if (Character->IsDowned())

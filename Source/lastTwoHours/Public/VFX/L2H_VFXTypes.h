@@ -45,6 +45,16 @@ enum class EL2H_VFXMoment : uint8
 	ChronoBall	UMETA(DisplayName = "Chrono Ball"),
 	WeaponFire	UMETA(DisplayName = "Weapon Fire"),
 	Impact		UMETA(DisplayName = "Impact"),
+
+	/*
+	 * Samer's own beats, appended after Impact rather than grouped with the movement rows above. The enum
+	 * is serialised as a number, so a row inserted in the middle would silently repoint every profile row
+	 * that already saved a later moment -- a spell effect would start playing on a footstep.
+	 */
+	Shrink		UMETA(DisplayName = "Shrink"),
+	TeleportOut	UMETA(DisplayName = "Teleport Out"),
+	TeleportIn	UMETA(DisplayName = "Teleport In"),
+	RecallReturn UMETA(DisplayName = "Recall Return"),
 };
 
 /**

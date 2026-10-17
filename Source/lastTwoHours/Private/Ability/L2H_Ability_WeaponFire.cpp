@@ -7,6 +7,7 @@
 #include "Damage/L2H_DamageTypeDataAsset.h"
 #include "Damage/L2H_HitReactionComponent.h"
 #include "Enemy/L2H_EnemyRobot.h"
+#include "Character/L2H_ShrinkComponent.h"
 #include "Character/L2H_StruggleComponent.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -112,7 +113,7 @@ void UL2H_Ability_WeaponFire::ActivateAbility(
 	const UL2H_WeaponDataAsset* ActiveData = Weapons->GetActiveWeaponData();
 	const bool bIsTool = ActiveData && ActiveData->Data.FireAbilityOverride;
 	// Held by an enemy: the hands are busy breaking free. Shrunk: too small to hold the gun.
-	if (UL2H_StruggleComponent::IsGrabbed(Character) || Character->GetActorScale3D().Z < 0.8f)
+	if (UL2H_StruggleComponent::IsGrabbed(Character) || UL2H_ShrinkComponent::GetBodyScale(Character) < 0.8f)
 	{
 		Finish(false);
 		return;

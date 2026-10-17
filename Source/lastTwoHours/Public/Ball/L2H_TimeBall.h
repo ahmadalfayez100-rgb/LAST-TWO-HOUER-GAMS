@@ -65,8 +65,12 @@ public:
 	 */
 	void HandleLaunchPress();
 
-	/** The unresolved ball thrown by Thrower, or null. Scans by owner, so two players can both have one out. */
-	static AL2H_TimeBall* FindForOwner(const UObject* WorldContextObject, const AActor* Thrower);
+	/**
+	 * The unresolved ball thrown by Thrower, or null. Scans by owner, so two players can both have one out.
+	 * Samer can have a travel orb and a planted field out at once, so the one in the hand comes first, then
+	 * one still travelling, then a planted field. ExactClass limits it to one kind of orb.
+	 */
+	static AL2H_TimeBall* FindForOwner(const UObject* WorldContextObject, const AActor* Thrower, const UClass* ExactClass = nullptr);
 
 	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
 	AL2H_BaseCharacter* GetThrower() const { return Thrower; }
@@ -84,6 +88,24 @@ public:
 	/** True once the ball has stopped moving and is waiting for a manual trigger. */
 	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
 	bool IsWaitingForTrigger() const { return bSettled && !bResolved; }
+
+	// ----- time field -----------------------------------------------------------------------
+
+	/**
+	 * The orb is a standing time field rather than a way to travel: it pins itself to whatever it
+	 * hit and never moves the thrower.
+	 *
+	 * True when FieldDiameter is set and FieldDilation is anything but 1. Nothing below needs to know
+	 * whether that means slow or haste -- the dilation number says it, and ApplyActorSlow already
+	 * accepts anything from 0.01 to 100. That is what lets one actor be both the Slow orb and the
+	 * Haste orb instead of two near-identical classes.
+	 */
+	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
+	bool IsFieldEnabled() const;
+
+	/** True between planting and closing. The orb is standing still and owning a field. */
+	UFUNCTION(BlueprintPure, Category = "L2H|ChronoBall")
+	bool IsFieldActive() const { return bFieldActive; }
 
 protected:
 	UFUNCTION()
@@ -112,6 +134,21 @@ protected:
 
 	/** Removes the ball. Every resolution ends here, so there is one place that stops it. */
 	void Finish();
+
+	/**
+	 * Server only. Pins the orb to the surface it hit and starts the field around it. From here the
+	 * orb is scenery with a timer, not a projectile: it charges no airborne cost and never teleports.
+	 */
+	void PlantField(const FHitResult& Impact);
+
+	/** Re-scans who is inside the field, lets go of whoever left and takes in whoever arrived. */
+	void RefreshField();
+
+	/** Puts every actor this field touched back to its own dilation. Safe to call when none is open. */
+	void EndField();
+
+	/** The field's own duration ran out: close it, then take the orb out of the world. */
+	void HandleFieldExpired();
 
 	/** Time changes go through the director, so the ball obeys the same effect-only rule as the abilities. */
 	void PayCost(float Seconds);
@@ -183,6 +220,48 @@ protected:
 	/** The slow bob of the floating orb, in cm either way. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Hold")
 	float HoldBobHeight = 2.5f;
+
+	// ----- time field -----------------------------------------------------------------------
+
+	/**
+	 * Dilation every actor inside the field is given. 0.25 is the Slow orb, 2.0 is the Haste orb, and
+	 * 1.0 disables the field so the orb keeps behaving as the plain travel orb.
+	 *
+	 * This is the only number that separates the two orbs, which is why there is no "is haste" flag
+	 * anywhere: a second flag could disagree with the dilation it was supposed to describe.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Field", meta = (ClampMin = "0.05", ClampMax = "20.0"))
+	float FieldDilation = 1.0f;
+
+	/** Diameter of the dilated sphere, in cm. 0 leaves the orb as the plain travel orb. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Field", meta = (ClampMin = "0.0"))
+	float FieldDiameter = 0.0f;
+
+	/** Seconds the field stands once the orb has planted. 0 means it never closes on its own. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Field", meta = (ClampMin = "0.0"))
+	float FieldDuration = 6.0f;
+
+	/** Seconds between two re-scans of who is standing in the field. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Field", meta = (ClampMin = "0.05"))
+	float FieldRefreshInterval = 0.2f;
+
+	/**
+	 * Leave the thrower out of his own field. On for the Slow orb, whose thrower must not be slowed by
+	 * the orb he just threw; off for the Haste orb, which is usually thrown to be stood in.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "L2H|ChronoBall|Field")
+	bool bFieldExemptsThrower = true;
+
+	/** True between planting and closing, on the server. */
+	UPROPERTY(Transient)
+	bool bFieldActive = false;
+
+	/** The actors this field is currently dilating, so exactly those can be given their speed back. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AActor>> FieldActors;
+
+	FTimerHandle FieldRefreshTimer;
+	FTimerHandle FieldEndTimer;
 
 private:
 	/** Every machine: keeps a held orb floating above the hand it is attached to. Cosmetic. */

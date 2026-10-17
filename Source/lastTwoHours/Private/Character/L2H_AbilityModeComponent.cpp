@@ -21,6 +21,10 @@
 #include "Time/L2H_TimeDirector.h"
 #include "UI/L2H_StruggleWidget.h"
 #include "World/L2H_ModeOrb.h"
+#include "Ability/L2H_RecallAnchor.h"
+#include "Character/L2H_ShrinkComponent.h"
+#include "EngineUtils.h"
+#include "GameplayTagContainer.h"
 
 #define LOCTEXT_NAMESPACE "L2HAbilityModes"
 
@@ -41,8 +45,6 @@ void UL2H_AbilityModeComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(UL2H_AbilityModeComponent, ModeIndex);
-	DOREPLIFETIME(UL2H_AbilityModeComponent, bShrunk);
-	DOREPLIFETIME(UL2H_AbilityModeComponent, ReturnMarker);
 }
 
 void UL2H_AbilityModeComponent::BeginPlay()
@@ -86,8 +88,23 @@ void UL2H_AbilityModeComponent::BuildModes()
 	}
 	if (bBall)
 	{
-		Modes.Add(EL2H_AbilityMode::Shrink);
-		Modes.Add(EL2H_AbilityMode::Return);
+		// Samer's own abilities, each one only when he was given it (the set lives in his ability data).
+		if (HasAbilityTag(TEXT("Ability.SlowBall")))
+		{
+			Modes.Add(EL2H_AbilityMode::SlowBall);
+		}
+		if (HasAbilityTag(TEXT("Ability.HasteBall")))
+		{
+			Modes.Add(EL2H_AbilityMode::HasteBall);
+		}
+		if (HasAbilityTag(TEXT("Ability.Shrink")))
+		{
+			Modes.Add(EL2H_AbilityMode::Shrink);
+		}
+		if (HasAbilityTag(TEXT("Ability.RecallAnchor")))
+		{
+			Modes.Add(EL2H_AbilityMode::Return);
+		}
 	}
 	else if (bBend)
 	{
@@ -99,8 +116,10 @@ FText UL2H_AbilityModeComponent::GetModeName(EL2H_AbilityMode Mode) const
 {
 	switch (Mode)
 	{
-	case EL2H_AbilityMode::Shrink: return LOCTEXT("Shrink", "Shrink ball");
-	case EL2H_AbilityMode::Return: return LOCTEXT("Return", "Return ball");
+	case EL2H_AbilityMode::Shrink: return LOCTEXT("Shrink", "Shrink");
+	case EL2H_AbilityMode::Return: return LOCTEXT("Return", "Return mark");
+	case EL2H_AbilityMode::SlowBall: return LOCTEXT("SlowBall", "Slow ball (field)");
+	case EL2H_AbilityMode::HasteBall: return LOCTEXT("HasteBall", "Haste ball (field)");
 	case EL2H_AbilityMode::SlowOrb: return LOCTEXT("SlowOrb", "Slow orb (thrown)");
 	default: break;
 	}
@@ -117,10 +136,18 @@ void UL2H_AbilityModeComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	{
 		return;
 	}
-	// Growing back on its own once the time is up and there is room.
-	if (GetOwner() && GetOwner()->HasAuthority() && bShrunk && World->GetTimeSeconds() >= GrowAt && HasRoomToGrow())
+	// Growing back on its own once the time is up and there is room (the shrink ability toggles back).
+	const UL2H_ShrinkComponent* Shrink = GetOwner() ? GetOwner()->FindComponentByClass<UL2H_ShrinkComponent>() : nullptr;
+	if (GetOwner() && GetOwner()->HasAuthority() && GrowAt > 0.0f && World->GetTimeSeconds() >= GrowAt)
 	{
-		SetShrunk(false);
+		if (!Shrink || !Shrink->IsShrunk())
+		{
+			GrowAt = 0.0f;
+		}
+		else if (Shrink->HasRoomToGrow() && ActivateByTag(TEXT("Ability.Shrink")) && !Shrink->IsShrunk())
+		{
+			GrowAt = 0.0f;
+		}
 	}
 	if (Toast && World->GetRealTimeSeconds() >= ToastUntil)
 	{
@@ -290,6 +317,9 @@ void UL2H_AbilityModeComponent::ServerUseMode_Implementation()
 	case EL2H_AbilityMode::Shrink: UseShrink(); break;
 	case EL2H_AbilityMode::Return: UseReturn(); break;
 	case EL2H_AbilityMode::SlowOrb: UseSlowOrb(); break;
+	// The orbs pay their own way (their ability charges taking one out), and their hold pose is the orb's.
+	case EL2H_AbilityMode::SlowBall: ActivateByTag(TEXT("Ability.SlowBall")); break;
+	case EL2H_AbilityMode::HasteBall: ActivateByTag(TEXT("Ability.HasteBall")); break;
 	default: break;
 	}
 }
@@ -349,110 +379,102 @@ bool UL2H_AbilityModeComponent::PayFor(float Seconds)
 	return true;
 }
 
-// Shrink -------------------------------------------------------------------------------------------
+// Samer's abilities ---------------------------------------------------------------------------------
 
-bool UL2H_AbilityModeComponent::HasRoomToGrow() const
+bool UL2H_AbilityModeComponent::CanAfford(float Seconds) const
 {
-	const ACharacter* Character = Cast<ACharacter>(GetOwner());
-	UWorld* World = GetWorld();
-	if (!Character || !World)
+	return Seconds <= 0.0f || !AL2H_TimeDirector::Get(GetOwner()) || AL2H_TimeDirector::GetTimeFor(GetOwner()) > Seconds + 1.0f;
+}
+
+bool UL2H_AbilityModeComponent::HasAbilityTag(FName Tag) const
+{
+	const AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(GetOwner());
+	const UAbilitySystemComponent* ASC = Character ? Character->GetAbilitySystemComponent() : nullptr;
+	const FGameplayTag GameplayTag = FGameplayTag::RequestGameplayTag(Tag, /*ErrorIfNotFound=*/false);
+	if (!ASC || !GameplayTag.IsValid())
 	{
 		return false;
 	}
-	const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
-	const float FullHalf = Capsule->GetUnscaledCapsuleHalfHeight();
-	const float FullRadius = Capsule->GetUnscaledCapsuleRadius();
-	const float SmallHalf = Capsule->GetScaledCapsuleHalfHeight();
-	const FVector GrownCentre = Character->GetActorLocation() + FVector(0.0f, 0.0f, FullHalf - SmallHalf + 2.0f);
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(L2HGrowRoom), false, Character);
-	return !World->OverlapBlockingTestByChannel(GrownCentre, FQuat::Identity, ECC_Pawn,
-		FCollisionShape::MakeCapsule(FullRadius * 0.95f, FullHalf * 0.98f), Params);
+	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (Spec.Ability && Spec.Ability->GetAssetTags().HasTagExact(GameplayTag))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UL2H_AbilityModeComponent::ActivateByTag(FName Tag)
+{
+	const AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(GetOwner());
+	UAbilitySystemComponent* ASC = Character ? Character->GetAbilitySystemComponent() : nullptr;
+	const FGameplayTag GameplayTag = FGameplayTag::RequestGameplayTag(Tag, /*ErrorIfNotFound=*/false);
+	return ASC && GameplayTag.IsValid() && ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(GameplayTag));
 }
 
 void UL2H_AbilityModeComponent::UseShrink()
 {
-	if (bShrunk)
-	{
-		// A press grows back early -- when there is room to.
-		if (HasRoomToGrow())
-		{
-			SetShrunk(false);
-		}
-		else
-		{
-			L2HTime::LogImportant(TEXT("Shrink: no room to grow back here"));
-		}
-		return;
-	}
-	if (!PayFor(ShrinkCost))
+	// The shrink itself is the ability's (the shrink component); this adds the price and the timer.
+	// Growing back is free; shrinking costs ShrinkCost and lasts ShrinkSeconds unless pressed again.
+	const UL2H_ShrinkComponent* Shrink = GetOwner()->FindComponentByClass<UL2H_ShrinkComponent>();
+	if (!Shrink)
 	{
 		return;
 	}
-	PlayPose(ShrinkMontage);
-	SetShrunk(true);
-	GrowAt = GetWorld()->GetTimeSeconds() + ShrinkSeconds;
-}
-
-void UL2H_AbilityModeComponent::SetShrunk(bool bNewShrunk)
-{
-	ACharacter* Character = Cast<ACharacter>(GetOwner());
-	if (!Character || bShrunk == bNewShrunk)
+	const bool bWasShrunk = Shrink->IsShrunk();
+	if (!bWasShrunk && !CanAfford(ShrinkCost))
 	{
+		L2HTime::LogImportant(FString::Printf(TEXT("Shrink: %s cannot afford %.0fs"), *GetNameSafe(GetOwner()), ShrinkCost));
 		return;
 	}
-	// Growing: lift by the difference first, so the bigger capsule does not start inside the floor.
-	if (!bNewShrunk)
+	ActivateByTag(TEXT("Ability.Shrink"));
+	if (!bWasShrunk && Shrink->IsShrunk())
 	{
-		const UCapsuleComponent* Capsule = Character->GetCapsuleComponent();
-		Character->SetActorLocation(Character->GetActorLocation() + FVector(0.0f, 0.0f,
-			Capsule->GetUnscaledCapsuleHalfHeight() - Capsule->GetScaledCapsuleHalfHeight() + 2.0f));
+		PayFor(ShrinkCost);
+		PlayPose(ShrinkMontage);
+		GrowAt = GetWorld()->GetTimeSeconds() + ShrinkSeconds;
 	}
-	bShrunk = bNewShrunk;
-	OnRep_Shrunk();
-	L2HTime::LogImportant(FString::Printf(TEXT("Shrink: %s %s"), *GetNameSafe(Character), bShrunk ? TEXT("shrinks") : TEXT("grows back")));
-}
-
-void UL2H_AbilityModeComponent::OnRep_Shrunk()
-{
-	if (AActor* Owner = GetOwner())
+	else if (bWasShrunk && !Shrink->IsShrunk())
 	{
-		Owner->SetActorScale3D(FVector(bShrunk ? ShrinkScale : 1.0f));
+		GrowAt = 0.0f;
 	}
 }
-
-// Return -------------------------------------------------------------------------------------------
 
 void UL2H_AbilityModeComponent::UseReturn()
 {
-	AL2H_BaseCharacter* Character = Cast<AL2H_BaseCharacter>(GetOwner());
-	AL2H_ModeOrb* Marker = ReturnMarker.Get();
-	if (Marker && !Marker->HasLanded())
+	// Laying the mark and going back to it are the recall ability's (the anchor); this adds the price.
+	const AActor* Owner = GetOwner();
+	auto FindMark = [this, Owner]() -> AL2H_RecallAnchor*
 	{
-		return;
-	}
-	if (!Marker)
-	{
-		if (PayFor(ReturnThrowCost))
+		for (TActorIterator<AL2H_RecallAnchor> It(GetWorld()); It; ++It)
 		{
-			PlayPose(MarkerThrowMontage);
-			ReturnMarker = ThrowOrb(false);
+			if (IsValid(*It) && It->GetAnchorOwner() == Owner)
+			{
+				return *It;
+			}
 		}
+		return nullptr;
+	};
+	const bool bHadMark = FindMark() != nullptr;
+	const float Price = bHadMark ? ReturnJumpCost : ReturnThrowCost;
+	if (!CanAfford(Price))
+	{
+		L2HTime::LogImportant(FString::Printf(TEXT("Return: %s cannot afford %.0fs"), *GetNameSafe(Owner), Price));
 		return;
 	}
-	// Back to the marker, standing on it.
-	if (!PayFor(ReturnJumpCost))
+	const FVector Before = Owner->GetActorLocation();
+	ActivateByTag(TEXT("Ability.RecallAnchor"));
+	const bool bHasMark = FindMark() != nullptr;
+	if (!bHadMark && bHasMark)
 	{
-		return;
+		PayFor(Price);
+		PlayPose(MarkerThrowMontage);
 	}
-	const float HalfHeight = Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	const FVector Destination = Marker->GetActorLocation() + FVector(0.0f, 0.0f, HalfHeight + 5.0f);
-	const bool bMoved = Character->TeleportTo(Destination, Character->GetActorRotation());
-	L2HTime::LogImportant(FString::Printf(TEXT("Return: %s %s to the marker"), *GetNameSafe(Character), bMoved ? TEXT("returned") : TEXT("could not return")));
-	if (bMoved)
+	else if (bHadMark && !FVector::PointsAreNear(Before, Owner->GetActorLocation(), 1.0f))
 	{
-		Character->GetCharacterMovement()->StopMovementImmediately();
-		Marker->Destroy();
-		ReturnMarker = nullptr;
+		// A refused return also spends the mark, but only a return that moved him is paid for.
+		PayFor(Price);
 	}
 }
 
@@ -486,7 +508,7 @@ AL2H_ModeOrb* UL2H_AbilityModeComponent::ThrowOrb(bool bSlow)
 	{
 		// A little loft so a throw at the floor ahead lands there instead of skimming off.
 		const FVector Velocity = (Aim.Vector() + FVector(0.0f, 0.0f, 0.12f)).GetSafeNormal() * OrbSpeed;
-		Orb->Launch(this, bSlow, Velocity, SlowOrbFactor, SlowOrbSeconds, bSlow ? 4.0f : ReturnMarkerSeconds);
+		Orb->Launch(this, bSlow, Velocity, SlowOrbFactor, SlowOrbSeconds, bSlow ? 4.0f : 90.0f);
 	}
 	return Orb;
 }
